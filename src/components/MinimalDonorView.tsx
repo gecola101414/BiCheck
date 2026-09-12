@@ -94,13 +94,13 @@ export const MinimalDonorView: React.FC = () => {
     }
   };
 
-  // Handle local File Upload / Selection (supports up to 500 MB)
+  // Handle local File Upload / Selection (supports up to 1 GB)
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
 
-    if (file.size > 500 * 1024 * 1024) {
-      setErrorMsg('Il file supera il limite massimo di 500 MB per la versione gratuita.');
+    if (file.size > 1024 * 1024 * 1024) {
+      setErrorMsg('Il file supera il limite massimo di 1 GB per il trasferimento Zero-Trace.');
       return;
     }
 
@@ -413,7 +413,7 @@ export const MinimalDonorView: React.FC = () => {
                   <Upload className="w-7 h-7 sm:w-8 sm:h-8 text-slate-500 mx-auto" />
                   <div>
                     <p className="text-xs text-slate-300 font-medium">Fai un tap per caricare una foto o file</p>
-                    <p className="text-[10px] text-slate-500 mt-0.5">JPG, PNG, PDF (Fino a 500 MB)</p>
+                    <p className="text-[10px] text-slate-500 mt-0.5">Tutti i formati supportati (Fino a 1 GB)</p>
                   </div>
                   <input
                     type="file"

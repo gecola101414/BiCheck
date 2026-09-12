@@ -5,9 +5,9 @@ import { createServer as createViteServer } from "vite";
 
 const app = express();
 
-// Set 500 MB payload limit for E2EE encrypted real files
-app.use(express.json({ limit: "500mb" }));
-app.use(express.urlencoded({ limit: "500mb", extended: true }));
+// Set 2000 MB payload limit for E2EE encrypted real files up to 1 GB
+app.use(express.json({ limit: "2000mb" }));
+app.use(express.urlencoded({ limit: "2000mb", extended: true }));
 
 const PORT = 3000;
 const STORE_FILE = path.join(process.cwd(), ".sessions_store.json");

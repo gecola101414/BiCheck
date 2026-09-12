@@ -187,7 +187,7 @@ export async function donorAttachFile(
   let updatedSession: EphemeralSession | null = null;
   let donorCode: string | null = donorCodeInput || null;
 
-  // 1. Send to Express Server (handles up to 500 MB)
+  // 1. Send to Express Server (handles up to 1 GB)
   try {
     const res = await fetch('/api/ephemeral/donor-attach-file', {
       method: 'POST',
