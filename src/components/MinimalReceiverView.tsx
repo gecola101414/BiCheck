@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Monitor, Clock, Download, AlertCircle, RefreshCw, Send, FileText, CheckCircle2, MessageSquare, ArrowRight } from 'lucide-react';
+import { Clock, Download, AlertCircle, RefreshCw, CheckCircle2, MessageSquare, ArrowRight } from 'lucide-react';
 import { EphemeralSession } from '../types';
 import { requestReceiverCode, receiverUnlock, fetchSessionStatus, subscribeToSession } from '../services/apiService';
 
@@ -91,7 +91,7 @@ export const MinimalReceiverView: React.FC = () => {
     try {
       const unlockedSession = await receiverUnlock(session.id, donorCodeInput.trim());
       setSession(unlockedSession);
-      setUnlockedTimer(600); // 10 minutes
+      setUnlockedTimer(1800); // 30 minutes
     } catch (err: any) {
       setErrorMsg(err.message || 'Codice errato o scaduto.');
     } finally {
@@ -100,22 +100,23 @@ export const MinimalReceiverView: React.FC = () => {
   };
 
   return (
-    <div className="max-w-xl mx-auto space-y-5 font-sans">
-      {/* View Title */}
+    <div className="max-w-xl mx-auto space-y-4 font-sans px-1 sm:px-0">
+      {/* View Title with 2026@AETERNA branding */}
       <div className="text-center space-y-1">
-        <span className="text-[11px] font-bold text-emerald-400 uppercase tracking-wider bg-emerald-500/10 px-2.5 py-0.5 rounded-full border border-emerald-500/20 inline-block">
+        <span className="text-[10px] sm:text-[11px] font-bold text-emerald-400 uppercase tracking-wider bg-emerald-500/10 px-2.5 py-0.5 rounded-full border border-emerald-500/20 inline-block">
           Console Ricevente (Hotel / Ente)
         </span>
-        <h2 className="text-2xl font-extrabold text-slate-100 tracking-tight">Richiedi Documento</h2>
-        <p className="text-xs text-slate-400">Genera il codice a 4 cifre e dettalo a voce al cliente.</p>
+        <h2 className="text-xl sm:text-2xl font-extrabold text-slate-100 tracking-tight">Richiedi Documento</h2>
+        <span className="text-xs font-bold text-emerald-400 font-mono block">2026@AETERNA</span>
+        <p className="text-[11px] sm:text-xs text-slate-400">Genera il codice a 4 cifre e dettalo a voce al cliente.</p>
       </div>
 
       {/* STEP 1 FORM */}
       {(!session || session.status === 'expired' || session.status === 'revoked') && (
-        <div className="bg-slate-900 border border-slate-800 rounded-3xl p-5 sm:p-6 shadow-xl space-y-4">
+        <div className="bg-slate-900 border border-slate-800 rounded-3xl p-4 sm:p-6 shadow-xl space-y-4">
           <div>
             <label className="block text-xs font-semibold text-slate-200 mb-1 flex items-center gap-1.5">
-              <MessageSquare className="w-3.5 h-3.5 text-emerald-400" />
+              <MessageSquare className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
               <span>Messaggio Personalizzato di Richiesta:</span>
             </label>
             <textarea
@@ -147,14 +148,14 @@ export const MinimalReceiverView: React.FC = () => {
           <button
             onClick={handleCreateRequest}
             disabled={isLoading}
-            className="w-full py-3.5 bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-400 hover:to-teal-400 text-slate-950 font-black text-sm rounded-2xl shadow-lg shadow-emerald-500/20 transition flex items-center justify-center space-x-2"
+            className="w-full py-3.5 px-3 bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-400 hover:to-teal-400 text-slate-950 font-black text-xs sm:text-sm rounded-2xl shadow-lg shadow-emerald-500/20 transition flex items-center justify-center space-x-2 active:scale-95"
           >
             {isLoading ? (
               <span>Generazione...</span>
             ) : (
               <>
-                <span>Genera Codice Ricevente (4 Cifre)</span>
-                <ArrowRight className="w-4 h-4" />
+                <span className="truncate">Genera Codice Ricevente (4 Cifre)</span>
+                <ArrowRight className="w-4 h-4 shrink-0" />
               </>
             )}
           </button>
@@ -162,7 +163,7 @@ export const MinimalReceiverView: React.FC = () => {
           {errorMsg && (
             <div className="p-3 rounded-2xl bg-red-950/50 border border-red-800 text-red-300 text-xs flex items-center space-x-2">
               <AlertCircle className="w-4 h-4 text-red-400 shrink-0" />
-              <span>{errorMsg}</span>
+              <span className="break-words">{errorMsg}</span>
             </div>
           )}
         </div>
@@ -170,15 +171,15 @@ export const MinimalReceiverView: React.FC = () => {
 
       {/* STEP 2 & 3: DISPLAY RECEIVER CODE & ENTER DONOR CODE */}
       {session && (session.status === 'pending_donor_upload' || session.status === 'pending_receiver_unlock') && (
-        <div className="bg-slate-900 border border-emerald-500/40 rounded-3xl p-6 shadow-2xl space-y-6 text-center">
+        <div className="bg-slate-900 border border-emerald-500/40 rounded-3xl p-4 sm:p-6 shadow-2xl space-y-5 text-center">
           {/* Receiver Code Display */}
-          <div className="space-y-2 border-b border-slate-800 pb-5">
+          <div className="space-y-2 border-b border-slate-800 pb-4">
             <span className="text-xs text-slate-400 block font-medium">Il tuo Codice Ricevente (Dillo a voce al cliente):</span>
-            <div className="inline-block text-5xl font-mono font-black text-emerald-400 bg-slate-950 px-8 py-3.5 rounded-3xl border-2 border-emerald-500/50 shadow-inner tracking-[0.4em]">
+            <div className="inline-block max-w-full text-3xl sm:text-5xl font-mono font-black text-emerald-400 bg-slate-950 px-5 sm:px-8 py-3.5 rounded-2xl sm:rounded-3xl border-2 border-emerald-500/50 shadow-inner tracking-[0.25em] sm:tracking-[0.4em]">
               {session.receiverCode}
             </div>
             <div className="flex items-center justify-center space-x-2 text-xs text-amber-400 mt-2">
-              <Clock className="w-4 h-4 animate-spin" />
+              <Clock className="w-4 h-4 animate-spin shrink-0" />
               <span>Scadenza Codice:</span>
               <span className="font-mono font-bold bg-slate-950 px-2 py-0.5 rounded border border-slate-800">
                 {Math.floor(receiverTimer / 60)}:{(receiverTimer % 60).toString().padStart(2, '0')}
@@ -188,9 +189,9 @@ export const MinimalReceiverView: React.FC = () => {
 
           {/* Status Message */}
           {session.status === 'pending_donor_upload' && (
-            <div className="p-4 rounded-2xl bg-slate-950 border border-slate-800 space-y-2">
+            <div className="p-3.5 rounded-2xl bg-slate-950 border border-slate-800 space-y-2">
               <div className="flex items-center justify-center space-x-2 text-xs font-semibold text-amber-400">
-                <RefreshCw className="w-4 h-4 animate-spin" />
+                <RefreshCw className="w-4 h-4 animate-spin shrink-0" />
                 <span>In attesa che il cliente carichi il file col codice {session.receiverCode}...</span>
               </div>
             </div>
@@ -205,20 +206,20 @@ export const MinimalReceiverView: React.FC = () => {
               </div>
 
               <div>
-                <label className="block text-xs font-bold text-slate-200 mb-1.5">Inserisci Codice Donatore (4 cifre):</label>
-                <div className="flex gap-2 sm:gap-3">
+                <label className="block text-xs font-bold text-slate-200 mb-2">Inserisci Codice Donatore (4 cifre):</label>
+                <div className="flex flex-col sm:flex-row gap-2 sm:gap-3">
                   <input
                     type="text"
                     maxLength={4}
                     placeholder="Es. 9988"
                     value={donorCodeInput}
                     onChange={(e) => setDonorCodeInput(e.target.value.replace(/\D/g, ''))}
-                    className="flex-1 bg-slate-950 border border-slate-700 rounded-2xl px-4 py-3 text-center text-3xl font-mono font-bold text-emerald-300 tracking-[0.4em] focus:outline-none focus:border-emerald-500"
+                    className="w-full sm:flex-1 bg-slate-950 border border-slate-700 rounded-2xl px-4 py-3 text-center text-2xl sm:text-3xl font-mono font-bold text-emerald-300 tracking-[0.3em] sm:tracking-[0.4em] focus:outline-none focus:border-emerald-500"
                   />
                   <button
                     onClick={handleUnlock}
                     disabled={isLoading || donorCodeInput.length !== 4}
-                    className="px-6 py-3 bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-400 hover:to-teal-400 text-slate-950 font-black text-xs rounded-2xl shadow-lg shadow-emerald-500/20 transition disabled:opacity-50"
+                    className="w-full sm:w-auto px-6 py-3.5 bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-400 hover:to-teal-400 text-slate-950 font-black text-xs rounded-2xl shadow-lg shadow-emerald-500/20 transition disabled:opacity-50 whitespace-nowrap active:scale-95"
                   >
                     {isLoading ? 'Sblocco...' : 'Sblocca File'}
                   </button>
@@ -230,14 +231,14 @@ export const MinimalReceiverView: React.FC = () => {
           {errorMsg && (
             <div className="p-3 rounded-2xl bg-red-950/50 border border-red-800 text-red-300 text-xs flex items-center space-x-2 text-left">
               <AlertCircle className="w-4 h-4 text-red-400 shrink-0" />
-              <span>{errorMsg}</span>
+              <span className="break-words">{errorMsg}</span>
             </div>
           )}
 
           <div className="pt-2">
             <button
               onClick={() => setSession(null)}
-              className="text-xs text-slate-500 hover:text-slate-300"
+              className="text-xs text-slate-500 hover:text-slate-300 underline"
             >
               Annulla Richiesta
             </button>
@@ -247,21 +248,21 @@ export const MinimalReceiverView: React.FC = () => {
 
       {/* STEP 4 UNLOCKED FILE DOWNLOAD */}
       {session && session.status === 'unlocked' && (
-        <div className="bg-slate-900 border-2 border-emerald-500 rounded-3xl p-6 shadow-2xl space-y-5 text-center">
-          <div className="w-14 h-14 rounded-2xl bg-emerald-500/20 border border-emerald-500 text-emerald-400 flex items-center justify-center mx-auto shadow-lg shadow-emerald-500/20">
-            <CheckCircle2 className="w-8 h-8" />
+        <div className="bg-slate-900 border-2 border-emerald-500 rounded-3xl p-4 sm:p-6 shadow-2xl space-y-4 text-center">
+          <div className="w-12 h-12 sm:w-14 sm:h-14 rounded-2xl bg-emerald-500/20 border border-emerald-500 text-emerald-400 flex items-center justify-center mx-auto shadow-lg shadow-emerald-500/20">
+            <CheckCircle2 className="w-7 h-7 sm:w-8 sm:h-8" />
           </div>
 
           <div>
             <span className="text-[10px] font-bold text-emerald-400 uppercase tracking-widest bg-emerald-500/20 px-2.5 py-0.5 rounded-full border border-emerald-500/30">
               FILE PRONTO PER IL DOWNLOAD
             </span>
-            <h3 className="text-xl font-extrabold text-slate-100 mt-2">{session.fileName || 'documento.jpg'}</h3>
+            <h3 className="text-lg sm:text-xl font-extrabold text-slate-100 mt-2 truncate">{session.fileName || 'documento.jpg'}</h3>
             <p className="text-xs text-slate-400 mt-0.5">Dimensione: {session.fileSize || '1.2 MB'}</p>
           </div>
 
           <div className="inline-flex items-center space-x-2 bg-slate-950 px-4 py-1.5 rounded-full border border-slate-800 text-xs text-slate-300">
-            <Clock className="w-3.5 h-3.5 text-emerald-400 animate-pulse" />
+            <Clock className="w-3.5 h-3.5 text-emerald-400 animate-pulse shrink-0" />
             <span>Link attivo per:</span>
             <span className="font-mono font-bold text-emerald-400">
               {Math.floor(unlockedTimer / 60)}:{(unlockedTimer % 60).toString().padStart(2, '0')}
@@ -279,9 +280,9 @@ export const MinimalReceiverView: React.FC = () => {
             <a
               href={session.fileDataUrl || '#'}
               download={session.fileName || 'documento.jpg'}
-              className="inline-flex items-center space-x-2 px-6 py-3.5 bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-400 hover:to-teal-400 text-slate-950 font-black text-xs rounded-2xl shadow-xl shadow-emerald-500/20 transition transform active:scale-95"
+              className="w-full sm:w-auto inline-flex items-center justify-center space-x-2 px-6 py-3.5 bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-400 hover:to-teal-400 text-slate-950 font-black text-xs rounded-2xl shadow-xl shadow-emerald-500/20 transition transform active:scale-95 text-center break-words"
             >
-              <Download className="w-4 h-4" />
+              <Download className="w-4 h-4 shrink-0" />
               <span>SCARICA FILE ORA</span>
             </a>
           </div>
@@ -289,7 +290,7 @@ export const MinimalReceiverView: React.FC = () => {
           <div className="pt-2 border-t border-slate-800">
             <button
               onClick={() => setSession(null)}
-              className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl text-xs font-semibold"
+              className="w-full sm:w-auto px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl text-xs font-semibold"
             >
               Chiudi Sessione
             </button>
@@ -299,7 +300,7 @@ export const MinimalReceiverView: React.FC = () => {
 
       {/* REVOKED STATE */}
       {session && session.status === 'revoked' && (
-        <div className="bg-slate-900 border border-red-500/50 rounded-3xl p-6 shadow-xl text-center space-y-3">
+        <div className="bg-slate-900 border border-red-500/50 rounded-3xl p-5 sm:p-6 shadow-xl text-center space-y-3">
           <div className="w-12 h-12 rounded-2xl bg-red-500/20 text-red-400 flex items-center justify-center mx-auto">
             <AlertCircle className="w-6 h-6" />
           </div>
@@ -307,7 +308,7 @@ export const MinimalReceiverView: React.FC = () => {
           <p className="text-xs text-slate-400">Il proprietario del file ha annullato il trasferimento ed i dati sono stati eliminati.</p>
           <button
             onClick={() => setSession(null)}
-            className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs rounded-xl"
+            className="w-full sm:w-auto px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs rounded-xl"
           >
             Nuova Richiesta
           </button>

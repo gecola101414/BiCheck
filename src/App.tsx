@@ -3,18 +3,18 @@ import { MinimalHeader, MinimalMode } from './components/MinimalHeader';
 import { MinimalReceiverView } from './components/MinimalReceiverView';
 import { MinimalDonorView } from './components/MinimalDonorView';
 import { MinimalDualSim } from './components/MinimalDualSim';
-import { ShieldCheck, Lock, Clock, Key } from 'lucide-react';
+import { ShieldCheck, Clock, Key } from 'lucide-react';
 
 export default function App() {
   const [mode, setMode] = useState<MinimalMode>('receiver');
 
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans selection:bg-emerald-500 selection:text-slate-950">
+    <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans selection:bg-emerald-500 selection:text-slate-950 max-w-full overflow-x-hidden">
       {/* Header */}
       <MinimalHeader mode={mode} setMode={setMode} />
 
       {/* Main Container */}
-      <main className="flex-1 max-w-5xl w-full mx-auto px-4 py-6 sm:py-8">
+      <main className="flex-1 max-w-5xl w-full mx-auto px-3 sm:px-4 py-4 sm:py-8">
         {mode === 'receiver' && <MinimalReceiverView />}
         {mode === 'donor' && <MinimalDonorView />}
         {mode === 'dual_sim' && <MinimalDualSim />}
@@ -23,20 +23,25 @@ export default function App() {
       {/* Footer */}
       <footer className="border-t border-slate-900 bg-slate-950 py-5 text-slate-500 text-xs">
         <div className="max-w-5xl mx-auto px-4 flex flex-col sm:flex-row items-center justify-between gap-3 text-center sm:text-left">
-          <div className="flex items-center space-x-2">
-            <ShieldCheck className="w-4 h-4 text-emerald-400 shrink-0" />
-            <span className="font-bold text-slate-300">SafeHandshake Ephemeral Protocol</span>
-            <span>— Zero Registrazioni • Memory-Only Transfer</span>
+          <div className="flex flex-col items-center sm:items-start space-y-0.5">
+            <div className="flex items-center space-x-2">
+              <ShieldCheck className="w-4 h-4 text-emerald-400 shrink-0" />
+              <span className="font-bold text-slate-300">SafeHandshake Ephemeral</span>
+            </div>
+            {/* Always under name: 2026@AETERNA */}
+            <span className="text-[11px] font-bold text-emerald-400 font-mono tracking-wider">
+              2026@AETERNA
+            </span>
           </div>
 
           <div className="flex items-center justify-center space-x-4 text-slate-400">
             <span className="flex items-center gap-1">
               <Key className="w-3.5 h-3.5 text-emerald-400" />
-              <span>4 Cifre (2 Min)</span>
+              <span>4 Cifre (15 Min)</span>
             </span>
             <span className="flex items-center gap-1">
               <Clock className="w-3.5 h-3.5 text-teal-400" />
-              <span>Download 10 Min</span>
+              <span>Download 30 Min</span>
             </span>
           </div>
         </div>

@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Smartphone, Upload, ShieldCheck, CheckCircle2, Clock, AlertCircle, XCircle, ArrowRight, Copy, Check, FileText } from 'lucide-react';
+import { Smartphone, Upload, CheckCircle2, Clock, AlertCircle, XCircle, Copy, Check, FileText } from 'lucide-react';
 import { EphemeralSession } from '../types';
 import { donorLoadRequest, donorAttachFile, donorRevoke, fetchSessionStatus, subscribeToSession } from '../services/apiService';
 
@@ -160,36 +160,37 @@ export const MinimalDonorView: React.FC = () => {
   };
 
   return (
-    <div className="max-w-xl mx-auto space-y-5 font-sans">
-      {/* Title */}
+    <div className="max-w-xl mx-auto space-y-4 font-sans px-1 sm:px-0">
+      {/* Title with 2026@AETERNA branding */}
       <div className="text-center space-y-1">
-        <span className="text-[11px] font-bold text-teal-400 uppercase tracking-wider bg-teal-500/10 px-2.5 py-0.5 rounded-full border border-teal-500/20 inline-block">
+        <span className="text-[10px] sm:text-[11px] font-bold text-teal-400 uppercase tracking-wider bg-teal-500/10 px-2.5 py-0.5 rounded-full border border-teal-500/20 inline-block">
           Console Donatore (Proprietario File)
         </span>
-        <h2 className="text-2xl font-extrabold text-slate-100 tracking-tight">Invia Documento a Voce</h2>
-        <p className="text-xs text-slate-400">Inserisci il codice di 4 cifre dettato dalla reception.</p>
+        <h2 className="text-xl sm:text-2xl font-extrabold text-slate-100 tracking-tight">Invia Documento a Voce</h2>
+        <span className="text-xs font-bold text-teal-400 font-mono block">2026@AETERNA</span>
+        <p className="text-[11px] sm:text-xs text-slate-400">Inserisci il codice di 4 cifre dettato dalla reception.</p>
       </div>
 
       {/* STEP 1: INPUT RECEIVER CODE */}
       {!session && (
-        <div className="bg-slate-900 border border-slate-800 rounded-3xl p-5 sm:p-6 shadow-xl space-y-4">
+        <div className="bg-slate-900 border border-slate-800 rounded-3xl p-4 sm:p-6 shadow-xl space-y-4">
           <div>
-            <label className="block text-xs font-bold text-slate-200 mb-1.5">
+            <label className="block text-xs font-bold text-slate-200 mb-2">
               Inserisci Codice Ricevente (4 Cifre):
             </label>
-            <div className="flex gap-2 sm:gap-3">
+            <div className="flex flex-col sm:flex-row gap-2 sm:gap-3">
               <input
                 type="text"
                 maxLength={4}
                 placeholder="Es. 4821"
                 value={receiverCodeInput}
                 onChange={(e) => setReceiverCodeInput(e.target.value.replace(/\D/g, ''))}
-                className="flex-1 bg-slate-950 border border-slate-700 rounded-2xl px-4 py-3 text-center text-3xl font-mono font-bold text-teal-300 tracking-[0.4em] focus:outline-none focus:border-teal-500"
+                className="w-full sm:flex-1 bg-slate-950 border border-slate-700 rounded-2xl px-4 py-3 text-center text-2xl sm:text-3xl font-mono font-bold text-teal-300 tracking-[0.3em] sm:tracking-[0.4em] focus:outline-none focus:border-teal-500"
               />
               <button
                 onClick={handleLoadRequest}
                 disabled={isLoading || receiverCodeInput.length !== 4}
-                className="px-6 py-3 bg-gradient-to-r from-teal-500 to-emerald-500 hover:from-teal-400 hover:to-emerald-400 text-slate-950 font-black text-xs rounded-2xl shadow-lg shadow-teal-500/20 transition disabled:opacity-50 whitespace-nowrap"
+                className="w-full sm:w-auto px-6 py-3.5 bg-gradient-to-r from-teal-500 to-emerald-500 hover:from-teal-400 hover:to-emerald-400 text-slate-950 font-black text-xs rounded-2xl shadow-lg shadow-teal-500/20 transition disabled:opacity-50 whitespace-nowrap active:scale-95"
               >
                 {isLoading ? 'Verifica...' : 'Connetti'}
               </button>
@@ -199,7 +200,7 @@ export const MinimalDonorView: React.FC = () => {
           {errorMsg && (
             <div className="p-3 rounded-2xl bg-red-950/50 border border-red-800 text-red-300 text-xs flex items-center space-x-2">
               <AlertCircle className="w-4 h-4 text-red-400 shrink-0" />
-              <span>{errorMsg}</span>
+              <span className="break-words">{errorMsg}</span>
             </div>
           )}
         </div>
@@ -207,13 +208,13 @@ export const MinimalDonorView: React.FC = () => {
 
       {/* STEP 2: LOADED REQUEST & ATTACH FILE */}
       {session && session.status === 'pending_donor_upload' && (
-        <div className="bg-slate-900 border border-teal-500/40 rounded-3xl p-6 shadow-2xl space-y-5">
+        <div className="bg-slate-900 border border-teal-500/40 rounded-3xl p-4 sm:p-6 shadow-2xl space-y-4 sm:space-y-5">
           {/* Receiver Message Box */}
-          <div className="p-4 rounded-2xl bg-slate-950 border border-slate-800 space-y-1">
+          <div className="p-3.5 sm:p-4 rounded-2xl bg-slate-950 border border-slate-800 space-y-1">
             <span className="text-[10px] font-bold text-teal-400 uppercase tracking-widest block">
               MESSAGGIO RICEVENTE (Codice: {session.receiverCode})
             </span>
-            <p className="text-sm font-semibold text-slate-100 italic">
+            <p className="text-xs sm:text-sm font-semibold text-slate-100 italic break-words">
               "{session.receiverMessage}"
             </p>
           </div>
@@ -225,14 +226,14 @@ export const MinimalDonorView: React.FC = () => {
             </label>
 
             {/* Custom File Upload Box */}
-            <div className="border-2 border-dashed border-slate-700 hover:border-teal-500/60 bg-slate-950 rounded-2xl p-5 text-center transition space-y-3">
+            <div className="border-2 border-dashed border-slate-700 hover:border-teal-500/60 bg-slate-950 rounded-2xl p-4 sm:p-5 text-center transition space-y-3">
               {selectedFile ? (
                 <div className="space-y-2">
                   <div className="w-10 h-10 rounded-xl bg-teal-500/20 text-teal-400 flex items-center justify-center mx-auto">
                     <FileText className="w-5 h-5" />
                   </div>
-                  <div>
-                    <h4 className="text-xs font-bold text-slate-100">{selectedFile.name}</h4>
+                  <div className="max-w-full overflow-hidden">
+                    <h4 className="text-xs font-bold text-slate-100 truncate">{selectedFile.name}</h4>
                     <p className="text-[11px] text-slate-400 font-mono">{selectedFile.size}</p>
                   </div>
                   <button
@@ -245,7 +246,7 @@ export const MinimalDonorView: React.FC = () => {
                 </div>
               ) : (
                 <div className="space-y-3">
-                  <Upload className="w-8 h-8 text-slate-500 mx-auto" />
+                  <Upload className="w-7 h-7 sm:w-8 sm:h-8 text-slate-500 mx-auto" />
                   <div>
                     <p className="text-xs text-slate-300 font-medium">Fai un tap per caricare una foto o file</p>
                     <p className="text-[10px] text-slate-500 mt-0.5">JPG, PNG, PDF (Max 15MB)</p>
@@ -257,17 +258,17 @@ export const MinimalDonorView: React.FC = () => {
                     className="hidden"
                     id="donor-file-input"
                   />
-                  <div className="flex flex-col sm:flex-row gap-2 justify-center">
+                  <div className="flex flex-col sm:flex-row gap-2 justify-center w-full">
                     <label
                       htmlFor="donor-file-input"
-                      className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold rounded-xl cursor-pointer inline-block"
+                      className="w-full sm:w-auto px-4 py-2.5 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold rounded-xl cursor-pointer text-center transition"
                     >
                       Sfoglia File...
                     </label>
                     <button
                       type="button"
                       onClick={handleUsePresetDocument}
-                      className="px-4 py-2 bg-teal-500/20 hover:bg-teal-500/30 text-teal-300 border border-teal-500/30 text-xs font-semibold rounded-xl"
+                      className="w-full sm:w-auto px-4 py-2.5 bg-teal-500/20 hover:bg-teal-500/30 text-teal-300 border border-teal-500/30 text-xs font-semibold rounded-xl text-center transition"
                     >
                       Usa Documento Demo
                     </button>
@@ -277,12 +278,12 @@ export const MinimalDonorView: React.FC = () => {
             </div>
           </div>
 
-          {/* Action buttons */}
-          <div className="space-y-3 pt-2">
+          {/* Action buttons - Mobile optimized */}
+          <div className="space-y-2.5 pt-2">
             <button
               onClick={handleAttachAndAuthorize}
               disabled={isLoading || !selectedFile}
-              className="w-full py-3.5 bg-gradient-to-r from-teal-500 to-emerald-500 hover:from-teal-400 hover:to-emerald-400 text-slate-950 font-black text-xs rounded-2xl shadow-lg shadow-teal-500/20 transition disabled:opacity-50"
+              className="w-full py-3.5 px-3 bg-gradient-to-r from-teal-500 to-emerald-500 hover:from-teal-400 hover:to-emerald-400 text-slate-950 font-black text-xs rounded-2xl shadow-lg shadow-teal-500/20 transition disabled:opacity-50 text-center uppercase tracking-wide break-words"
             >
               {isLoading ? 'Autorizzazione...' : 'AUTORIZZA E GENERA CODICE DONATORE'}
             </button>
@@ -290,9 +291,9 @@ export const MinimalDonorView: React.FC = () => {
             {/* KILL SWITCH BUTTON */}
             <button
               onClick={handleRevoke}
-              className="w-full py-2.5 bg-red-950/40 hover:bg-red-900/50 text-red-300 border border-red-800/80 rounded-2xl text-xs font-bold transition flex items-center justify-center space-x-1.5"
+              className="w-full py-3 px-3 bg-red-950/40 hover:bg-red-900/50 text-red-300 border border-red-800/80 rounded-2xl text-xs font-bold transition flex items-center justify-center space-x-1.5 text-center"
             >
-              <XCircle className="w-4 h-4" />
+              <XCircle className="w-4 h-4 shrink-0" />
               <span>INTERROMPI E ANNULLA COLLEGAMENTO</span>
             </button>
           </div>
@@ -300,7 +301,7 @@ export const MinimalDonorView: React.FC = () => {
           {errorMsg && (
             <div className="p-3 rounded-2xl bg-red-950/50 border border-red-800 text-red-300 text-xs flex items-center space-x-2">
               <AlertCircle className="w-4 h-4 text-red-400 shrink-0" />
-              <span>{errorMsg}</span>
+              <span className="break-words">{errorMsg}</span>
             </div>
           )}
         </div>
@@ -308,25 +309,35 @@ export const MinimalDonorView: React.FC = () => {
 
       {/* STEP 3 & 4: DISPLAY DONOR CODE + KILL SWITCH */}
       {session && (session.status === 'pending_receiver_unlock' || session.status === 'unlocked') && (
-        <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 shadow-2xl space-y-6 text-center">
+        <div className="bg-slate-900 border border-slate-800 rounded-3xl p-4 sm:p-6 shadow-2xl space-y-5 text-center">
           {session.status === 'pending_receiver_unlock' && (
             <div className="space-y-4">
-              <div className="inline-flex items-center space-x-2 px-3 py-1 rounded-full bg-teal-500/10 text-teal-300 text-xs font-semibold border border-teal-500/20">
-                <Clock className="w-3.5 h-3.5 animate-spin" />
-                <span>In attesa che la reception inserisca il codice...</span>
+              <div className="inline-flex items-center space-x-2 px-3 py-1 rounded-full bg-teal-500/10 text-teal-300 text-[11px] sm:text-xs font-semibold border border-teal-500/20 max-w-full">
+                <Clock className="w-3.5 h-3.5 animate-spin shrink-0" />
+                <span className="truncate">In attesa che la reception inserisca il codice...</span>
               </div>
 
               <div>
-                <span className="text-xs text-slate-400 block mb-1 font-medium">Ditta a voce questo CODICE DONATORE:</span>
-                <div className="flex items-center justify-center space-x-3">
-                  <div className="text-5xl font-mono font-black text-emerald-400 bg-slate-950 px-8 py-3.5 rounded-3xl border-2 border-emerald-500/50 tracking-[0.4em] shadow-inner">
+                <span className="text-xs text-slate-400 block mb-1.5 font-medium">Ditta a voce questo CODICE DONATORE:</span>
+                <div className="flex flex-col sm:flex-row items-center justify-center gap-2 sm:gap-3">
+                  <div className="w-full sm:w-auto text-3xl sm:text-5xl font-mono font-black text-emerald-400 bg-slate-950 px-5 sm:px-8 py-3 rounded-2xl sm:rounded-3xl border-2 border-emerald-500/50 tracking-[0.25em] sm:tracking-[0.4em] shadow-inner">
                     {donorCode || session.donorCode}
                   </div>
                   <button
                     onClick={() => copyCode(donorCode || session.donorCode || '')}
-                    className="p-3 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-2xl border border-slate-700"
+                    className="w-full sm:w-auto px-4 py-3 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl border border-slate-700 flex items-center justify-center space-x-2 text-xs font-bold transition"
                   >
-                    {copied ? <Check className="w-5 h-5 text-emerald-400" /> : <Copy className="w-5 h-5" />}
+                    {copied ? (
+                      <>
+                        <Check className="w-4 h-4 text-emerald-400" />
+                        <span>Copiato!</span>
+                      </>
+                    ) : (
+                      <>
+                        <Copy className="w-4 h-4" />
+                        <span>Copia Codice</span>
+                      </>
+                    )}
                   </button>
                 </div>
               </div>
@@ -342,9 +353,9 @@ export const MinimalDonorView: React.FC = () => {
               <div className="pt-3 border-t border-slate-800">
                 <button
                   onClick={handleRevoke}
-                  className="w-full py-3 bg-red-600 hover:bg-red-500 text-white font-black text-xs rounded-2xl shadow-lg shadow-red-600/30 transition flex items-center justify-center space-x-2"
+                  className="w-full py-3.5 px-3 bg-red-600 hover:bg-red-500 text-white font-black text-xs rounded-2xl shadow-lg shadow-red-600/30 transition flex items-center justify-center space-x-2 text-center"
                 >
-                  <XCircle className="w-4 h-4" />
+                  <XCircle className="w-4 h-4 shrink-0" />
                   <span>INTERROMPI E REVOCA COLLEGAMENTO SUBITO</span>
                 </button>
               </div>
@@ -352,19 +363,19 @@ export const MinimalDonorView: React.FC = () => {
           )}
 
           {session.status === 'unlocked' && (
-            <div className="py-4 space-y-4">
+            <div className="py-2 sm:py-4 space-y-4">
               <div className="w-12 h-12 rounded-2xl bg-emerald-500/20 text-emerald-400 flex items-center justify-center mx-auto">
                 <CheckCircle2 className="w-7 h-7" />
               </div>
               <h3 className="text-lg font-extrabold text-slate-100">TRASFERIMENTO COMPLETATO</h3>
-              <p className="text-xs text-slate-400">L'impiegato ha sbloccato il file. La finestra di 10 minuti è attiva.</p>
+              <p className="text-xs text-slate-400">L'impiegato ha sbloccato il file. La finestra di 30 minuti è attiva.</p>
 
               {/* KILL SWITCH REMAINS ACTIVE UNTIL END */}
               <button
                 onClick={handleRevoke}
-                className="w-full py-3 bg-red-950/50 hover:bg-red-900/60 text-red-300 border border-red-800 font-bold text-xs rounded-2xl transition flex items-center justify-center space-x-2"
+                className="w-full py-3 px-3 bg-red-950/50 hover:bg-red-900/60 text-red-300 border border-red-800 font-bold text-xs rounded-2xl transition flex items-center justify-center space-x-2 text-center"
               >
-                <XCircle className="w-4 h-4" />
+                <XCircle className="w-4 h-4 shrink-0" />
                 <span>CANCELLA ED ELIMINA FILE ORA</span>
               </button>
             </div>
@@ -374,7 +385,7 @@ export const MinimalDonorView: React.FC = () => {
 
       {/* REVOKED CONFIRMATION */}
       {session && session.status === 'revoked' && (
-        <div className="bg-slate-900 border border-red-500/50 rounded-3xl p-6 shadow-xl text-center space-y-3">
+        <div className="bg-slate-900 border border-red-500/50 rounded-3xl p-5 sm:p-6 shadow-xl text-center space-y-3">
           <div className="w-12 h-12 rounded-2xl bg-red-500/20 text-red-400 flex items-center justify-center mx-auto">
             <XCircle className="w-6 h-6" />
           </div>
@@ -386,7 +397,7 @@ export const MinimalDonorView: React.FC = () => {
               setReceiverCodeInput('');
               setSelectedFile(null);
             }}
-            className="px-5 py-2.5 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold rounded-2xl"
+            className="w-full sm:w-auto px-5 py-2.5 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold rounded-2xl"
           >
             Torna all'Inizio
           </button>
