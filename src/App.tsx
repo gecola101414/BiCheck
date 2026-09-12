@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { MinimalHeader, MinimalMode } from './components/MinimalHeader';
 import { MinimalReceiverView } from './components/MinimalReceiverView';
 import { MinimalDonorView } from './components/MinimalDonorView';
+import { QuickDirectTransfer } from './components/QuickDirectTransfer';
 import { MinimalDualSim } from './components/MinimalDualSim';
 import { ShieldCheck, Lock, Trash2, Key } from 'lucide-react';
 
@@ -17,6 +18,7 @@ export default function App() {
       <main className="flex-1 max-w-5xl w-full mx-auto px-3 sm:px-4 py-4 sm:py-8">
         {mode === 'receiver' && <MinimalReceiverView />}
         {mode === 'donor' && <MinimalDonorView />}
+        {mode === 'quick_direct' && <QuickDirectTransfer />}
         {mode === 'dual_sim' && <MinimalDualSim />}
       </main>
 

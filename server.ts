@@ -180,6 +180,87 @@ app.get("/api/health", (req, res) => {
   res.json({ status: "ok", appName: "GecolaShare", version: "2026@AETERNA", activeCount: activeSessions.size });
 });
 
+// Raw binary blob upload for large files (up to 1 GB)
+app.post("/api/ephemeral/upload-raw-blob/:sessionId", express.raw({ type: "*/*", limit: "1500mb" }), (req, res) => {
+  const { sessionId } = req.params;
+  const buffer = req.body as Buffer;
+
+  if (!buffer || buffer.length === 0) {
+    return res.status(400).json({ error: "Buffer dati vuoto" });
+  }
+
+  const filePath = path.join(BLOBS_DIR, `${sessionId}.dat`);
+  fs.writeFileSync(filePath, buffer);
+  fileMemoryStore.set(sessionId, buffer.toString("utf-8"));
+  console.log(`[SERVER RAW BLOB] Saved ${buffer.length} bytes binary file to ${filePath}`);
+
+  let session = activeSessions.get(sessionId);
+  if (session) {
+    session.fileUrl = `/api/ephemeral/download/${sessionId}`;
+  }
+
+  res.json({ success: true, bytesSaved: buffer.length });
+});
+
+// MODE 3: DIRECT QUICK TRANSFER (Senza Cifratura E2EE) - Upload
+app.post("/api/ephemeral/direct-upload", (req, res) => {
+  const { fileName, fileSize, fileType, fileDataUrl } = req.body;
+  cleanupSessions();
+
+  const now = Date.now();
+  const quickCode = generate4DigitCode();
+  const sessionId = "dir_" + Math.random().toString(36).substring(2, 9);
+
+  const session: EphemeralSessionInternal & { quickCode?: string } = {
+    id: sessionId,
+    receiverMessage: "Trasferimento Diretto Veloce",
+    receiverCode: "0000",
+    receiverCodeCreatedAt: now,
+    receiverCodeExpiresAt: now + 60 * 60 * 1000,
+    quickCode,
+    fileName: fileName || "documento.pdf",
+    fileSize: fileSize || "1.0 MB",
+    fileType: fileType || "application/octet-stream",
+    isEncrypted: false,
+    status: "unlocked",
+    createdAt: now,
+    donorCodeExpiresAt: now + 60 * 60 * 1000
+  };
+
+  if (fileDataUrl) {
+    saveFileBlob(sessionId, fileDataUrl);
+    session.fileUrl = `/api/ephemeral/download/${sessionId}`;
+  }
+
+  activeSessions.set(sessionId, session);
+  saveSessionsToDisk();
+
+  console.log(`[GECOLASHARE DIRECT TRANSFER] File uploaded directly. Quick Code: ${quickCode} (Session: ${sessionId})`);
+  res.json({ success: true, session, quickCode });
+});
+
+// MODE 3 LOOKUP: Receiver enters 4-digit Quick Code for Direct Transfer
+app.post("/api/ephemeral/direct-lookup", (req, res) => {
+  const { quickCode } = req.body;
+  cleanupSessions();
+
+  const codeStr = quickCode ? quickCode.toString().replace(/\D/g, "") : "";
+  if (!codeStr || codeStr.length !== 4) {
+    return res.status(400).json({ error: "Inserisci un codice di 4 cifre valido." });
+  }
+
+  const matches = Array.from(activeSessions.values())
+    .filter(s => (s as any).quickCode === codeStr && s.status !== "purged" && s.status !== "expired" && s.status !== "revoked")
+    .sort((a, b) => b.createdAt - a.createdAt);
+
+  if (matches.length === 0) {
+    return res.status(404).json({ error: "Codice non trovato, scaduto o file già auto-distrutto." });
+  }
+
+  const session = matches[0];
+  res.json({ success: true, session });
+});
+
 // Step 1: Receiver generates a customized request & 4-digit Receiver Code
 app.post("/api/ephemeral/request", (req, res) => {
   const { message } = req.body;

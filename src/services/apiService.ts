@@ -23,6 +23,152 @@ export function getLocalSessions(): EphemeralSession[] {
   }
 }
 
+export async function uploadRawBlob(sessionId: string, blob: Blob | ArrayBuffer): Promise<boolean> {
+  try {
+    const res = await fetch(`/api/ephemeral/upload-raw-blob/${sessionId}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/octet-stream' },
+      body: blob
+    });
+    return res.ok;
+  } catch (err) {
+    console.error('Error uploading raw blob:', err);
+    return false;
+  }
+}
+
+export async function directUploadFile(
+  fileName: string,
+  fileSize: string,
+  fileType: string,
+  fileDataUrlOrBlob: string | Blob
+): Promise<{ session: EphemeralSession; quickCode: string }> {
+  let session: EphemeralSession | null = null;
+  let quickCode: string | null = null;
+
+  const isString = typeof fileDataUrlOrBlob === 'string';
+  const dataUrlPayload = isString && (fileDataUrlOrBlob as string).length < 2000000 ? fileDataUrlOrBlob : undefined;
+
+  // 1. Post metadata & optional preview to Express
+  try {
+    const res = await fetch('/api/ephemeral/direct-upload', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        fileName,
+        fileSize,
+        fileType,
+        fileDataUrl: dataUrlPayload
+      })
+    });
+    if (res.ok) {
+      const data = await res.json();
+      if (data.success && data.session && data.quickCode) {
+        session = data.session;
+        quickCode = data.quickCode;
+      }
+    }
+  } catch (err) {
+    console.warn('Express direct upload error:', err);
+  }
+
+  if (!session || !quickCode) {
+    const now = Date.now();
+    quickCode = generate4DigitCode();
+    const sessionId = "dir_" + Math.random().toString(36).substring(2, 9);
+    session = {
+      id: sessionId,
+      receiverMessage: "Trasferimento Diretto Veloce",
+      receiverCode: "0000",
+      receiverCodeCreatedAt: now,
+      receiverCodeExpiresAt: now + 60 * 60 * 1000,
+      quickCode,
+      fileName,
+      fileSize,
+      fileType,
+      fileUrl: `/api/ephemeral/download/${sessionId}`,
+      isEncrypted: false,
+      status: 'unlocked',
+      createdAt: now
+    };
+  }
+
+  // Upload raw binary payload if present
+  if (!isString || (fileDataUrlOrBlob as string).length >= 2000000) {
+    const blobToUpload = isString 
+      ? new Blob([fileDataUrlOrBlob as string], { type: fileType })
+      : (fileDataUrlOrBlob as Blob);
+    await uploadRawBlob(session.id, blobToUpload);
+  }
+
+  // Sync to Firestore Cloud DB
+  try {
+    const sessionRef = doc(db, 'sessions', session.id);
+    await setDoc(sessionRef, session);
+  } catch (e) {
+    // ignore
+  }
+
+  saveOrUpdateLocalSession(session);
+  return { session, quickCode };
+}
+
+export async function directLookupCode(quickCode: string): Promise<EphemeralSession> {
+  const codeStr = quickCode ? quickCode.toString().replace(/\D/g, '') : '';
+  if (!codeStr || codeStr.length !== 4) {
+    throw new Error('Inserisci un codice di 4 cifre valido.');
+  }
+
+  // 1. Check Express backend
+  try {
+    const res = await fetch('/api/ephemeral/direct-lookup', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ quickCode: codeStr })
+    });
+    if (res.ok) {
+      const data = await res.json();
+      if (data.success && data.session) {
+        saveOrUpdateLocalSession(data.session);
+        return data.session;
+      }
+    }
+  } catch (err) {
+    console.warn('Express direct lookup error:', err);
+  }
+
+  // 2. Query Firestore Cloud DB
+  try {
+    const sessionsRef = collection(db, 'sessions');
+    const q = query(sessionsRef, where('quickCode', '==', codeStr));
+    const querySnapshot = await getDocs(q);
+
+    const matches: EphemeralSession[] = [];
+    querySnapshot.forEach((d) => {
+      const data = d.data() as EphemeralSession;
+      if (data.status !== 'purged' && data.status !== 'expired' && data.status !== 'revoked') {
+        matches.push(data);
+      }
+    });
+
+    if (matches.length > 0) {
+      saveOrUpdateLocalSession(matches[0]);
+      return matches[0];
+    }
+  } catch (err) {
+    console.error('Firestore direct lookup error:', err);
+  }
+
+  // 3. Fallback LocalStorage
+  const localSessions = getLocalSessions();
+  const match = localSessions.find(s => s.quickCode === codeStr && s.status !== 'purged');
+  if (match) {
+    return match;
+  }
+
+  throw new Error('Codice non trovato o file già auto-distrutto.');
+}
+
 export function saveLocalSessions(sessions: EphemeralSession[]) {
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(sessions));
@@ -187,7 +333,10 @@ export async function donorAttachFile(
   let updatedSession: EphemeralSession | null = null;
   let donorCode: string | null = donorCodeInput || null;
 
-  // 1. Send to Express Server (handles up to 1 GB)
+  const isLargePayload = fileDataUrl && fileDataUrl.length >= 2000000;
+  const jsonPayload = isLargePayload ? undefined : fileDataUrl;
+
+  // 1. Send to Express Server (handles metadata + raw upload for large payloads)
   try {
     const res = await fetch('/api/ephemeral/donor-attach-file', {
       method: 'POST',
@@ -197,7 +346,7 @@ export async function donorAttachFile(
         fileName,
         fileSize,
         fileType,
-        fileDataUrl,
+        fileDataUrl: jsonPayload,
         isEncrypted: true,
         receiverCode,
         donorCode: donorCodeInput
@@ -210,6 +359,10 @@ export async function donorAttachFile(
         updatedSession = data.session;
         donorCode = data.donorCode;
       }
+    }
+
+    if (isLargePayload) {
+      await uploadRawBlob(sessionId, new Blob([fileDataUrl], { type: 'text/plain' }));
     }
   } catch (err) {
     console.warn('[API] Express server attach file warning:', err);

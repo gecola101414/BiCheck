@@ -18,8 +18,10 @@ export interface EphemeralSession {
   fileName?: string;
   fileSize?: string;
   fileType?: string;
-  fileDataUrl?: string;             // Base64 encrypted payload
+  fileDataUrl?: string;             // Encrypted payload or raw data
   fileUrl?: string;                 // Download endpoint URL
+  isEncrypted?: boolean;            // true for E2EE, false for Direct Transfer
+  quickCode?: string;               // 4 digits for Direct Transfer mode
   status: SessionState;
   unlockedAt?: number;
   unlockedExpiresAt?: number;

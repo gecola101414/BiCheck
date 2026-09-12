@@ -1,7 +1,7 @@
 import React from 'react';
 import { Smartphone, Monitor, Layers, Shield, Lock, Zap } from 'lucide-react';
 
-export type MinimalMode = 'receiver' | 'donor' | 'dual_sim';
+export type MinimalMode = 'receiver' | 'donor' | 'quick_direct' | 'dual_sim';
 
 interface MinimalHeaderProps {
   mode: MinimalMode;
@@ -63,7 +63,19 @@ export const MinimalHeader: React.FC<MinimalHeaderProps> = ({ mode, setMode }) =
             }`}
           >
             <Smartphone className="w-3.5 h-3.5 shrink-0" />
-            <span className="text-xs">Invia File</span>
+            <span className="text-xs">Invia E2EE</span>
+          </button>
+
+          <button
+            onClick={() => setMode('quick_direct')}
+            className={`flex-1 sm:flex-initial flex items-center justify-center space-x-1.5 px-3 py-2 rounded-xl transition ${
+              mode === 'quick_direct'
+                ? 'bg-cyan-400 text-slate-950 shadow-sm font-bold'
+                : 'text-slate-400 hover:text-slate-200'
+            }`}
+          >
+            <Zap className="w-3.5 h-3.5 shrink-0 fill-current" />
+            <span className="text-xs">Invio Veloce</span>
           </button>
 
           <button
