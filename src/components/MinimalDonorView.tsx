@@ -83,20 +83,75 @@ export const MinimalDonorView: React.FC = () => {
     }
   };
 
-  // Handle local File Upload / Selection
+  // Handle local File Upload / Selection (supports up to 500 MB)
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
 
+    if (file.size > 500 * 1024 * 1024) {
+      setErrorMsg('Il file supera il limite massimo di 500 MB per la versione gratuita.');
+      return;
+    }
+
     const reader = new FileReader();
     reader.onload = (event) => {
       const dataUrl = event.target?.result as string;
-      setSelectedFile({
-        name: file.name,
-        size: (file.size / 1024).toFixed(0) + ' KB',
-        type: file.type || 'image/jpeg',
-        dataUrl
-      });
+
+      // Smart optimization for smartphone camera photos to preserve clarity while ensuring instant upload
+      if (file.type.startsWith('image/')) {
+        const img = new Image();
+        img.onload = () => {
+          const maxDim = 2048; // Crisp 2K resolution for reading document details
+          let width = img.width;
+          let height = img.height;
+          if (width > maxDim || height > maxDim) {
+            if (width > height) {
+              height = Math.round((height * maxDim) / width);
+              width = maxDim;
+            } else {
+              width = Math.round((width * maxDim) / height);
+              height = maxDim;
+            }
+            const canvas = document.createElement('canvas');
+            canvas.width = width;
+            canvas.height = height;
+            const ctx = canvas.getContext('2d');
+            if (ctx) {
+              ctx.drawImage(img, 0, 0, width, height);
+              const compressedDataUrl = canvas.toDataURL(file.type || 'image/jpeg', 0.88);
+              setSelectedFile({
+                name: file.name,
+                size: (compressedDataUrl.length * 0.75 / 1024).toFixed(0) + ' KB',
+                type: file.type || 'image/jpeg',
+                dataUrl: compressedDataUrl
+              });
+              return;
+            }
+          }
+          setSelectedFile({
+            name: file.name,
+            size: (file.size / 1024).toFixed(0) + ' KB',
+            type: file.type || 'image/jpeg',
+            dataUrl
+          });
+        };
+        img.onerror = () => {
+          setSelectedFile({
+            name: file.name,
+            size: (file.size / 1024).toFixed(0) + ' KB',
+            type: file.type || 'image/jpeg',
+            dataUrl
+          });
+        };
+        img.src = dataUrl;
+      } else {
+        setSelectedFile({
+          name: file.name,
+          size: file.size > 1024 * 1024 ? (file.size / (1024 * 1024)).toFixed(1) + ' MB' : (file.size / 1024).toFixed(0) + ' KB',
+          type: file.type || 'application/octet-stream',
+          dataUrl
+        });
+      }
     };
     reader.readAsDataURL(file);
   };

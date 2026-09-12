@@ -278,7 +278,7 @@ export const MinimalReceiverView: React.FC = () => {
 
           <div>
             <a
-              href={session.fileDataUrl || '#'}
+              href={session.fileUrl || session.fileDataUrl || '#'}
               download={session.fileName || 'documento.jpg'}
               className="w-full sm:w-auto inline-flex items-center justify-center space-x-2 px-6 py-3.5 bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-400 hover:to-teal-400 text-slate-950 font-black text-xs rounded-2xl shadow-xl shadow-emerald-500/20 transition transform active:scale-95 text-center break-words"
             >

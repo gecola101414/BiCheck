@@ -185,7 +185,7 @@ export async function donorAttachFile(
   let updatedSession: EphemeralSession | null = null;
   let donorCode: string | null = null;
 
-  // 1. Send to Express Server
+  // 1. Send to Express Server (handles up to 500 MB)
   try {
     const res = await fetch('/api/ephemeral/donor-attach-file', {
       method: 'POST',
@@ -209,24 +209,30 @@ export async function donorAttachFile(
     donorCode = generate4DigitCode();
   }
 
-  const updateFields = {
+  const updateFields: any = {
     fileName: fileName || 'documento.jpg',
     fileSize: fileSize || '1.2 MB',
     fileType: fileType || 'image/jpeg',
-    fileDataUrl,
+    fileUrl: `/api/ephemeral/download/${sessionId}`,
     donorCode,
     donorCodeCreatedAt: now,
     donorCodeExpiresAt: now + 15 * 60 * 1000,
     status: 'pending_receiver_unlock' as const
   };
 
-  // 2. Update Firestore
+  // Only store fileDataUrl in Firestore if it's smaller than 400KB to prevent 1MB Firestore limit
+  if (fileDataUrl && fileDataUrl.length < 400000) {
+    updateFields.fileDataUrl = fileDataUrl;
+  }
+
+  // 2. Update Firestore for real-time signaling (lightweight payload < 1KB)
   try {
     const sessionRef = doc(db, 'sessions', sessionId);
     await updateDoc(sessionRef, updateFields);
     const snap = await getDoc(sessionRef);
     if (snap.exists()) {
-      updatedSession = snap.data() as EphemeralSession;
+      const fsSession = snap.data() as EphemeralSession;
+      if (!updatedSession) updatedSession = fsSession;
     }
   } catch (err) {
     console.error('[API] Firestore updateDoc error:', err);
@@ -238,7 +244,8 @@ export async function donorAttachFile(
   if (index !== -1) {
     const localUpdated: EphemeralSession = {
       ...localSessions[index],
-      ...updateFields
+      ...updateFields,
+      fileDataUrl // store full locally if available
     };
     saveOrUpdateLocalSession(localUpdated);
     if (!updatedSession) updatedSession = localUpdated;
@@ -294,7 +301,7 @@ export async function receiverUnlock(sessionId: string, donorCode: string): Prom
         throw new Error('Codice donatore errato o scaduto.');
       }
       await updateDoc(sessionRef, updateFields);
-      unlockedSession = { ...current, ...updateFields };
+      if (!unlockedSession) unlockedSession = { ...current, ...updateFields };
     }
   } catch (err: any) {
     if (err.message && err.message.includes('Codice donatore errato')) {

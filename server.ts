@@ -4,7 +4,10 @@ import fs from "fs";
 import { createServer as createViteServer } from "vite";
 
 const app = express();
-app.use(express.json({ limit: "25mb" }));
+
+// Set 500 MB payload limit for large real files
+app.use(express.json({ limit: "500mb" }));
+app.use(express.urlencoded({ limit: "500mb", extended: true }));
 
 const PORT = 3000;
 const STORE_FILE = path.join(process.cwd(), ".sessions_store.json");
@@ -22,6 +25,7 @@ interface EphemeralSessionInternal {
   fileSize?: string;
   fileType?: string;
   fileDataUrl?: string;
+  fileUrl?: string;
   status: 'pending_donor_upload' | 'pending_receiver_unlock' | 'unlocked' | 'revoked' | 'expired';
   unlockedAt?: number;
   unlockedExpiresAt?: number;
@@ -29,8 +33,10 @@ interface EphemeralSessionInternal {
 }
 
 let activeSessions: Map<string, EphemeralSessionInternal> = new Map();
+// Dedicated file blobs store to avoid memory leaks
+const fileStore: Map<string, string> = new Map();
 
-// File persistence helpers so sessions survive server restarts/reloads
+// File persistence helpers
 function loadSessionsFromDisk() {
   try {
     if (fs.existsSync(STORE_FILE)) {
@@ -47,7 +53,15 @@ function loadSessionsFromDisk() {
 
 function saveSessionsToDisk() {
   try {
-    const entries = Array.from(activeSessions.entries());
+    // Strip fileDataUrl before writing session list metadata to disk to keep store file lightweight
+    const entries = Array.from(activeSessions.entries()).map(([id, session]) => {
+      const clone = { ...session };
+      if (clone.fileDataUrl && clone.fileDataUrl.length > 500000) {
+        fileStore.set(id, clone.fileDataUrl);
+        delete clone.fileDataUrl;
+      }
+      return [id, clone] as [string, EphemeralSessionInternal];
+    });
     fs.writeFileSync(STORE_FILE, JSON.stringify(entries), "utf-8");
   } catch (err) {
     console.error("Error saving sessions to disk:", err);
@@ -70,14 +84,17 @@ function cleanupSessions() {
     if (session.status === 'pending_donor_upload' && now > session.receiverCodeExpiresAt) {
       session.status = 'expired';
       delete session.fileDataUrl;
+      fileStore.delete(id);
       changed = true;
     } else if (session.status === 'pending_receiver_unlock' && session.donorCodeExpiresAt && now > session.donorCodeExpiresAt) {
       session.status = 'expired';
       delete session.fileDataUrl;
+      fileStore.delete(id);
       changed = true;
     } else if (session.status === 'unlocked' && session.unlockedExpiresAt && now > session.unlockedExpiresAt) {
       session.status = 'expired';
       delete session.fileDataUrl;
+      fileStore.delete(id);
       changed = true;
     }
   }
@@ -133,7 +150,6 @@ app.post("/api/ephemeral/donor-load-request", (req, res) => {
     return res.status(400).json({ error: "Inserisci un codice ricevente di 4 cifre." });
   }
 
-  // Find all non-expired, non-revoked sessions matching this code
   const matches = Array.from(activeSessions.values())
     .filter(s => s.receiverCode === codeStr && s.status !== "revoked" && s.status !== "expired")
     .sort((a, b) => b.createdAt - a.createdAt);
@@ -166,7 +182,17 @@ app.post("/api/ephemeral/donor-attach-file", (req, res) => {
   session.fileName = fileName || "documento.jpg";
   session.fileSize = fileSize || "1.2 MB";
   session.fileType = fileType || "image/jpeg";
-  session.fileDataUrl = fileDataUrl;
+  
+  if (fileDataUrl) {
+    fileStore.set(sessionId, fileDataUrl);
+    session.fileUrl = `/api/ephemeral/download/${sessionId}`;
+    if (fileDataUrl.length < 400000) {
+      session.fileDataUrl = fileDataUrl;
+    } else {
+      delete session.fileDataUrl;
+    }
+  }
+
   session.donorCode = donorCode;
   session.donorCodeCreatedAt = now;
   session.donorCodeExpiresAt = now + 15 * 60 * 1000; // 15 mins
@@ -187,11 +213,11 @@ app.post("/api/ephemeral/receiver-unlock", (req, res) => {
     return res.status(404).json({ error: "Sessione non trovata." });
   }
 
+  const codeStr = donorCode ? donorCode.toString().replace(/\D/g, "") : "";
+
   if (session.status === "unlocked") {
     return res.json({ success: true, session });
   }
-
-  const codeStr = donorCode ? donorCode.toString().replace(/\D/g, "") : "";
 
   if (session.status !== "pending_receiver_unlock" || session.donorCode !== codeStr) {
     return res.status(400).json({ error: "Codice donatore errato o scaduto." });
@@ -202,9 +228,41 @@ app.post("/api/ephemeral/receiver-unlock", (req, res) => {
   session.unlockedAt = now;
   session.unlockedExpiresAt = now + 30 * 60 * 1000; // 30 minutes download window
 
+  // If fileDataUrl was stored in fileStore, attach back or serve via fileUrl
+  if (!session.fileDataUrl && fileStore.has(sessionId)) {
+    session.fileDataUrl = fileStore.get(sessionId);
+  }
+
   saveSessionsToDisk();
   console.log(`[SERVER] File unlocked successfully for session ${sessionId}`);
   res.json({ success: true, session });
+});
+
+// Dedicated File Download / Stream Endpoint (up to 500 MB)
+app.get("/api/ephemeral/download/:sessionId", (req, res) => {
+  cleanupSessions();
+  const session = activeSessions.get(req.params.sessionId);
+  if (!session || session.status === "revoked" || session.status === "expired") {
+    return res.status(404).send("File non disponibile, revocato o scaduto.");
+  }
+
+  const fileData = session.fileDataUrl || fileStore.get(req.params.sessionId);
+  if (!fileData) {
+    return res.status(404).send("File non trovato.");
+  }
+
+  if (fileData.startsWith("data:")) {
+    const matches = fileData.match(/^data:(.+);base64,(.+)$/);
+    if (matches) {
+      const mimeType = matches[1];
+      const buffer = Buffer.from(matches[2], 'base64');
+      res.setHeader('Content-Type', mimeType);
+      res.setHeader('Content-Disposition', `attachment; filename="${session.fileName || 'documento'}"`);
+      return res.send(buffer);
+    }
+  }
+
+  res.send(fileData);
 });
 
 // Donor Kill Switch: Revoke connection immediately
@@ -213,7 +271,8 @@ app.post("/api/ephemeral/donor-revoke", (req, res) => {
   const session = activeSessions.get(sessionId);
   if (session) {
     session.status = "revoked";
-    delete session.fileDataUrl; // Instant memory wipe
+    delete session.fileDataUrl;
+    fileStore.delete(sessionId);
     saveSessionsToDisk();
     console.log(`[SERVER] Session ${sessionId} REVOKED by donor`);
   }
@@ -226,6 +285,10 @@ app.get("/api/ephemeral/status/:sessionId", (req, res) => {
   const session = activeSessions.get(req.params.sessionId);
   if (!session) {
     return res.status(404).json({ error: "Sessione non trovata" });
+  }
+  // Ensure fileUrl is present if fileDataUrl is omitted
+  if (!session.fileDataUrl && fileStore.has(session.id)) {
+    session.fileUrl = `/api/ephemeral/download/${session.id}`;
   }
   res.json({ success: true, session });
 });
