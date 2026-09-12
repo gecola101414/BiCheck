@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Smartphone, Upload, ShieldCheck, CheckCircle2, Clock, AlertCircle, XCircle, ArrowRight, Copy, Check, FileText } from 'lucide-react';
 import { EphemeralSession } from '../types';
+import { donorLoadRequest, donorAttachFile, donorRevoke, fetchSessionStatus } from '../services/apiService';
 
 export const MinimalDonorView: React.FC = () => {
   const [receiverCodeInput, setReceiverCodeInput] = useState('');
@@ -26,15 +27,14 @@ export const MinimalDonorView: React.FC = () => {
     if (session && session.status === 'pending_receiver_unlock') {
       interval = setInterval(async () => {
         try {
-          const res = await fetch(`/api/ephemeral/status/${session.id}`);
-          const data = await res.json();
-          if (data.success && data.session) {
-            setSession(data.session);
+          const latest = await fetchSessionStatus(session.id);
+          if (latest) {
+            setSession(latest);
           }
         } catch (e) {
           // ignore
         }
-      }, 2000);
+      }, 1500);
     }
     return () => {
       if (interval) clearInterval(interval);
@@ -65,18 +65,8 @@ export const MinimalDonorView: React.FC = () => {
     setErrorMsg(null);
 
     try {
-      const res = await fetch('/api/ephemeral/donor-load-request', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ receiverCode: receiverCodeInput.trim() })
-      });
-
-      const data = await res.json();
-      if (!res.ok || !data.success) {
-        throw new Error(data.error || 'Codice non trovato o scaduto.');
-      }
-
-      setSession(data.session);
+      const loadedSession = await donorLoadRequest(receiverCodeInput.trim());
+      setSession(loadedSession);
     } catch (err: any) {
       setErrorMsg(err.message || 'Codice invalido.');
       setSession(null);
@@ -105,7 +95,6 @@ export const MinimalDonorView: React.FC = () => {
 
   // Quick preset sample document selection if user doesn't upload a file
   const handleUsePresetDocument = () => {
-    // Standard mock document image placeholder data URL
     const mockImageSvg = `data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="400" height="250" viewBox="0 0 400 250" fill="%230f172a"><rect width="400" height="250" rx="20" fill="%230f172a" stroke="%231e293b" stroke-width="4"/><text x="30" y="50" fill="%2314b8a6" font-size="20" font-family="sans-serif" font-weight="bold">CARTA D'IDENTITÀ ITALIANA</text><text x="30" y="90" fill="%23e2e8f0" font-size="16" font-family="sans-serif">Cognome: Rossi</text><text x="30" y="120" fill="%23e2e8f0" font-size="16" font-family="sans-serif">Nome: Mario</text><text x="30" y="150" fill="%23e2e8f0" font-size="16" font-family="sans-serif">Codice Fiscale: RSSMRA88R15F205Z</text><text x="30" y="180" fill="%23e2e8f0" font-size="16" font-family="sans-serif">Scadenza: 10/05/2032</text><rect x="280" y="70" width="90" height="110" rx="10" fill="%231e293b"/><text x="300" y="130" fill="%2364748b" font-size="12" font-family="sans-serif">FOTO</text></svg>`;
     
     setSelectedFile({
@@ -127,23 +116,16 @@ export const MinimalDonorView: React.FC = () => {
     setErrorMsg(null);
 
     try {
-      const res = await fetch('/api/ephemeral/donor-attach-file', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          sessionId: session.id,
-          fileName: selectedFile.name,
-          fileSize: selectedFile.size,
-          fileType: selectedFile.type,
-          fileDataUrl: selectedFile.dataUrl
-        })
-      });
+      const result = await donorAttachFile(
+        session.id,
+        selectedFile.name,
+        selectedFile.size,
+        selectedFile.type,
+        selectedFile.dataUrl
+      );
 
-      const data = await res.json();
-      if (!res.ok || !data.success) throw new Error(data.error || 'Errore durante il caricamento');
-
-      setSession(data.session);
-      setDonorCode(data.donorCode);
+      setSession(result.session);
+      setDonorCode(result.donorCode);
       setDonorTimer(120);
     } catch (err: any) {
       setErrorMsg(err.message || 'Errore durante l\'autorizzazione.');
@@ -156,11 +138,7 @@ export const MinimalDonorView: React.FC = () => {
   const handleRevoke = async () => {
     if (!session) return;
     try {
-      await fetch('/api/ephemeral/donor-revoke', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sessionId: session.id })
-      });
+      await donorRevoke(session.id);
       setSession(prev => prev ? { ...prev, status: 'revoked' } : null);
     } catch (e) {
       // ignore

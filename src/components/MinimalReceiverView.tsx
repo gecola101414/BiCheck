@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Monitor, Clock, Download, AlertCircle, RefreshCw, Send, FileText, CheckCircle2, MessageSquare, ArrowRight } from 'lucide-react';
 import { EphemeralSession } from '../types';
+import { requestReceiverCode, receiverUnlock, fetchSessionStatus } from '../services/apiService';
 
 export const MinimalReceiverView: React.FC = () => {
   const [customMessage, setCustomMessage] = useState('Ciao! Mi mandi il tuo documento di identità per la registrazione Hotel?');
@@ -24,15 +25,14 @@ export const MinimalReceiverView: React.FC = () => {
     if (session && (session.status === 'pending_donor_upload' || session.status === 'pending_receiver_unlock')) {
       interval = setInterval(async () => {
         try {
-          const res = await fetch(`/api/ephemeral/status/${session.id}`);
-          const data = await res.json();
-          if (data.success && data.session) {
-            setSession(data.session);
+          const latestSession = await fetchSessionStatus(session.id);
+          if (latestSession) {
+            setSession(latestSession);
           }
         } catch (e) {
           // ignore
         }
-      }, 2000);
+      }, 1500);
     }
     return () => {
       if (interval) clearInterval(interval);
@@ -61,18 +61,12 @@ export const MinimalReceiverView: React.FC = () => {
     setIsLoading(true);
     setErrorMsg(null);
     try {
-      const res = await fetch('/api/ephemeral/request', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: customMessage })
-      });
-      const data = await res.json();
-      if (!res.ok || !data.success) throw new Error(data.error || 'Errore di connessione');
-      setSession(data.session);
+      const newSession = await requestReceiverCode(customMessage);
+      setSession(newSession);
       setReceiverTimer(120);
       setDonorCodeInput('');
     } catch (err: any) {
-      setErrorMsg(err.message || 'Errore durante la generazione');
+      setErrorMsg(err.message || 'Errore durante la generazione del codice');
     } finally {
       setIsLoading(false);
     }
@@ -87,20 +81,11 @@ export const MinimalReceiverView: React.FC = () => {
     setIsLoading(true);
     setErrorMsg(null);
     try {
-      const res = await fetch('/api/ephemeral/receiver-unlock', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          sessionId: session.id,
-          donorCode: donorCodeInput.trim()
-        })
-      });
-      const data = await res.json();
-      if (!res.ok || !data.success) throw new Error(data.error || 'Codice errato o scaduto.');
-      setSession(data.session);
+      const unlockedSession = await receiverUnlock(session.id, donorCodeInput.trim());
+      setSession(unlockedSession);
       setUnlockedTimer(600); // 10 minutes
     } catch (err: any) {
-      setErrorMsg(err.message || 'Codice errato.');
+      setErrorMsg(err.message || 'Codice errato o scaduto.');
     } finally {
       setIsLoading(false);
     }
