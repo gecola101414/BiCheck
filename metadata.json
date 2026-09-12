@@ -1,6 +1,6 @@
 {
-  "name": "SafeHandshake - Vault Share",
-  "description": "Archivio cloud personale e condivisione sicura a tempo tramite codice bilaterale a 4 cifre e minimizzazione GDPR dei dati.",
+  "name": "SafeHandshake Ephemeral",
+  "description": "Trasferimento file e documenti ultra-veloce a tempo con codice vocale a 4 cifre. Zero registrazioni, massima privacy.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }
