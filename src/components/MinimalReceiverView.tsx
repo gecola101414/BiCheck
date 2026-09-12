@@ -9,8 +9,8 @@ export const MinimalReceiverView: React.FC = () => {
   const [session, setSession] = useState<EphemeralSession | null>(null);
   const [donorCodeInput, setDonorCodeInput] = useState('');
   
-  const [receiverTimer, setReceiverTimer] = useState<number>(60);
-  const [unlockedTimer, setUnlockedTimer] = useState<number>(60);
+  const [receiverTimer, setReceiverTimer] = useState<number>(180);
+  const [unlockedTimer, setUnlockedTimer] = useState<number>(180);
   const [isLoading, setIsLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [isPurged, setIsPurged] = useState(false);
@@ -74,7 +74,7 @@ export const MinimalReceiverView: React.FC = () => {
     try {
       const newSession = await requestReceiverCode(customMessage);
       setSession(newSession);
-      setReceiverTimer(60);
+      setReceiverTimer(180);
       setDonorCodeInput('');
     } catch (err: any) {
       setErrorMsg(err.message || 'Errore durante la generazione del codice');
@@ -94,7 +94,7 @@ export const MinimalReceiverView: React.FC = () => {
     try {
       const unlockedSession = await receiverUnlock(session.id, donorCodeInput.trim());
       setSession(unlockedSession);
-      setUnlockedTimer(1800); // 30 minutes
+      setUnlockedTimer(180);
     } catch (err: any) {
       setErrorMsg(err.message || 'Codice errato o scaduto.');
     } finally {

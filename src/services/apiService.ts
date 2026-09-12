@@ -78,7 +78,7 @@ export async function directUploadFile(
       receiverMessage: "Trasferimento Diretto Veloce",
       receiverCode: "0000",
       receiverCodeCreatedAt: now,
-      receiverCodeExpiresAt: now + 60 * 1000, // 1 minute validity
+      receiverCodeExpiresAt: now + 3 * 60 * 1000, // 3 minutes validity
       quickCode,
       fileName,
       fileSize,

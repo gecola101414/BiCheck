@@ -128,23 +128,23 @@ function generate4DigitCode(): string {
   return Math.floor(1000 + Math.random() * 9000).toString();
 }
 
-// Automatic cleanup of expired sessions (1 minute lifespan rule as requested)
-const ONE_MINUTE_MS = 60 * 1000;
+// Automatic cleanup of expired sessions (3 minutes lifespan rule as requested)
+const THREE_MINUTES_MS = 3 * 60 * 1000;
 
 function cleanupSessions() {
   const now = Date.now();
   let changed = false;
 
   for (const [id, session] of activeSessions.entries()) {
-    const isExceededOneMinute = (now - session.createdAt) > ONE_MINUTE_MS;
+    const isExceededThreeMinutes = (now - session.createdAt) > THREE_MINUTES_MS;
 
-    if (session.status !== 'purged' && session.status !== 'expired' && isExceededOneMinute) {
+    if (session.status !== 'purged' && session.status !== 'expired' && isExceededThreeMinutes) {
       session.status = 'expired';
       delete session.fileDataUrl;
       delete session.fileUrl;
       purgeFileBlob(id);
       changed = true;
-      console.log(`[GECOLASHARE AUTO-CLEANUP] Session ${id} reached 1 minute limit. Auto-purged from server.`);
+      console.log(`[GECOLASHARE AUTO-CLEANUP] Session ${id} reached 3 minute limit. Auto-purged from server.`);
     } else if (session.status === 'pending_donor_upload' && now > session.receiverCodeExpiresAt) {
       session.status = 'expired';
       delete session.fileDataUrl;
@@ -158,7 +158,7 @@ function cleanupSessions() {
       purgeFileBlob(id);
       changed = true;
     } else if (session.status === 'unlocked' && session.unlockedExpiresAt && now > session.unlockedExpiresAt) {
-      session.status = 'purged';
+      session.status = 'expired';
       delete session.fileDataUrl;
       delete session.fileUrl;
       purgeFileBlob(id);
@@ -194,16 +194,17 @@ app.post("/api/ephemeral/direct-upload", (req, res) => {
     receiverMessage: "Trasferimento Diretto Veloce",
     receiverCode: "0000",
     receiverCodeCreatedAt: now,
-    receiverCodeExpiresAt: now + ONE_MINUTE_MS,
+    receiverCodeExpiresAt: now + THREE_MINUTES_MS,
     quickCode,
     fileName: fileName || "documento.pdf",
     fileSize: fileSize || "1.0 MB",
     fileType: fileType || "application/octet-stream",
+    fileDataUrl: fileDataUrl,
     isEncrypted: false,
     status: "unlocked",
     createdAt: now,
-    donorCodeExpiresAt: now + ONE_MINUTE_MS,
-    unlockedExpiresAt: now + ONE_MINUTE_MS
+    donorCodeExpiresAt: now + THREE_MINUTES_MS,
+    unlockedExpiresAt: now + THREE_MINUTES_MS
   };
 
   if (fileDataUrl) {
@@ -254,7 +255,7 @@ app.post("/api/ephemeral/request", (req, res) => {
     receiverMessage,
     receiverCode,
     receiverCodeCreatedAt: now,
-    receiverCodeExpiresAt: now + ONE_MINUTE_MS, // 1 minute validity
+    receiverCodeExpiresAt: now + THREE_MINUTES_MS, // 3 minutes validity
     status: "pending_donor_upload",
     createdAt: now
   };
@@ -306,7 +307,7 @@ app.post("/api/ephemeral/donor-attach-file", (req, res) => {
       receiverMessage: "Richiesta documento",
       receiverCode: receiverCode || "0000",
       receiverCodeCreatedAt: now,
-      receiverCodeExpiresAt: now + ONE_MINUTE_MS,
+      receiverCodeExpiresAt: now + THREE_MINUTES_MS,
       status: "pending_donor_upload",
       createdAt: now
     };
@@ -332,7 +333,7 @@ app.post("/api/ephemeral/donor-attach-file", (req, res) => {
 
   session.donorCode = donorCode;
   session.donorCodeCreatedAt = now;
-  session.donorCodeExpiresAt = now + ONE_MINUTE_MS;
+  session.donorCodeExpiresAt = now + THREE_MINUTES_MS;
   session.status = "pending_receiver_unlock";
 
   saveSessionsToDisk();
@@ -357,10 +358,10 @@ app.post("/api/ephemeral/receiver-unlock", (req, res) => {
         receiverMessage: "Richiesta documento",
         receiverCode: "0000",
         receiverCodeCreatedAt: now,
-        receiverCodeExpiresAt: now + ONE_MINUTE_MS,
+        receiverCodeExpiresAt: now + THREE_MINUTES_MS,
         donorCode: donorCode,
         donorCodeCreatedAt: now,
-        donorCodeExpiresAt: now + ONE_MINUTE_MS,
+        donorCodeExpiresAt: now + THREE_MINUTES_MS,
         status: "pending_receiver_unlock",
         createdAt: now
       };
@@ -387,7 +388,7 @@ app.post("/api/ephemeral/receiver-unlock", (req, res) => {
   const now = Date.now();
   session.status = "unlocked";
   session.unlockedAt = now;
-  session.unlockedExpiresAt = now + ONE_MINUTE_MS;
+  session.unlockedExpiresAt = now + THREE_MINUTES_MS;
 
   saveSessionsToDisk();
   console.log(`[GECOLASHARE] File unlocked for ${sessionId}`);
@@ -401,7 +402,7 @@ app.get("/api/ephemeral/download/:sessionId", (req, res) => {
   const fileBlob = getFileBlob(req.params.sessionId);
 
   if (!fileBlob && (!session || (!session.fileDataUrl && !session.fileUrl))) {
-    return res.status(404).send("File non disponibile: auto-distrutto, revocato o scaduto.");
+    return res.status(404).send("File non disponibile o scaduto al termine dei 3 minuti.");
   }
 
   const fileData = fileBlob || session?.fileDataUrl;
@@ -425,21 +426,15 @@ app.get("/api/ephemeral/download/:sessionId", (req, res) => {
   res.send(fileData);
 });
 
-// Explicit Post-Download Confirmation: Wipes file permanently AFTER client download completes
+// Explicit Post-Download Confirmation: Logs download and preserves file until 3 min expiration
 app.post("/api/ephemeral/confirm-purge", (req, res) => {
   const { sessionId } = req.body;
   const session = activeSessions.get(sessionId);
-  if (session && session.status !== "purged") {
-    session.status = "purged";
-    session.purgedAt = Date.now();
-    delete session.fileDataUrl;
-    delete session.fileUrl;
-    purgeFileBlob(sessionId);
+  if (session) {
+    (session as any).downloaded = true;
+    (session as any).downloadedAt = Date.now();
     saveSessionsToDisk();
-    console.log(`[GECOLASHARE ZERO-TRACE] File ${sessionId} downloaded by receiver & PERMANENTLY WIPED from server!`);
-  } else {
-    // Purge file blob regardless to be 100% sure
-    purgeFileBlob(sessionId);
+    console.log(`[GECOLASHARE] File ${sessionId} downloaded by receiver. Will auto-purge at end of 3 minutes.`);
   }
   res.json({ success: true });
 });

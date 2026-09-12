@@ -35,7 +35,7 @@ export const QuickDirectTransfer: React.FC = () => {
   const [generatedQuickCode, setGeneratedQuickCode] = useState<string | null>(null);
   const [copiedCode, setCopiedCode] = useState(false);
   const [sendError, setSendError] = useState<string | null>(null);
-  const [sendTimer, setSendTimer] = useState<number>(60);
+  const [sendTimer, setSendTimer] = useState<number>(180);
 
   // --- RECEIVE STATE ---
   const [inputQuickCode, setInputQuickCode] = useState('');
@@ -44,7 +44,7 @@ export const QuickDirectTransfer: React.FC = () => {
   const [isDownloading, setIsDownloading] = useState(false);
   const [downloadSuccess, setDownloadSuccess] = useState(false);
   const [receiveError, setReceiveError] = useState<string | null>(null);
-  const [receiveTimer, setReceiveTimer] = useState<number>(60);
+  const [receiveTimer, setReceiveTimer] = useState<number>(180);
 
   // Send Timer Countdown Effect
   React.useEffect(() => {
@@ -133,7 +133,7 @@ export const QuickDirectTransfer: React.FC = () => {
 
           setUploadedSession(result.session);
           setGeneratedQuickCode(result.quickCode);
-          setSendTimer(60);
+          setSendTimer(180);
         } catch (err: any) {
           setSendError(err.message || 'Errore durante il caricamento del file.');
         } finally {
@@ -181,7 +181,9 @@ export const QuickDirectTransfer: React.FC = () => {
     try {
       const session = await directLookupCode(inputQuickCode.trim());
       setFoundSession(session);
-      setReceiveTimer(60);
+      const elapsed = Math.floor((Date.now() - session.createdAt) / 1000);
+      const remaining = Math.max(0, 180 - elapsed);
+      setReceiveTimer(remaining);
     } catch (err: any) {
       setReceiveError(err.message || 'Codice non trovato, scaduto o file auto-distrutto.');
     } finally {
@@ -402,8 +404,8 @@ export const QuickDirectTransfer: React.FC = () => {
                   </button>
                 </div>
                 <div className="pt-2 text-center">
-                  <span className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-mono font-bold border ${sendTimer > 10 ? 'bg-amber-500/10 text-amber-300 border-amber-500/30' : 'bg-red-500/20 text-red-300 border-red-500/40 animate-pulse'}`}>
-                    ⏱️ Scadenza Codice: {sendTimer}s (1 min max)
+                  <span className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-mono font-bold border ${sendTimer > 20 ? 'bg-amber-500/10 text-amber-300 border-amber-500/30' : 'bg-red-500/20 text-red-300 border-red-500/40 animate-pulse'}`}>
+                    ⏱️ Scadenza Codice: {Math.floor(sendTimer / 60)}m {sendTimer % 60}s (3 min max)
                   </span>
                 </div>
               </div>
@@ -513,8 +515,8 @@ export const QuickDirectTransfer: React.FC = () => {
                 </h3>
                 <p className="text-xs text-slate-400 font-mono mt-0.5">{foundSession.fileSize}</p>
                 <div className="mt-2">
-                  <span className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-mono font-bold border ${receiveTimer > 10 ? 'bg-amber-500/10 text-amber-300 border-amber-500/30' : 'bg-red-500/20 text-red-300 border-red-500/40 animate-pulse'}`}>
-                    ⏱️ Scade tra: {receiveTimer}s
+                  <span className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-mono font-bold border ${receiveTimer > 20 ? 'bg-amber-500/10 text-amber-300 border-amber-500/30' : 'bg-red-500/20 text-red-300 border-red-500/40 animate-pulse'}`}>
+                    ⏱️ Scade tra: {Math.floor(receiveTimer / 60)}m {receiveTimer % 60}s
                   </span>
                 </div>
               </div>
