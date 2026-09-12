@@ -233,7 +233,7 @@ app.post("/api/ephemeral/donor-load-request", (req, res) => {
 
 // Step 3: Donor attaches E2EE Encrypted file & generates 4-digit Donor Code
 app.post("/api/ephemeral/donor-attach-file", (req, res) => {
-  const { sessionId, fileName, fileSize, fileType, fileDataUrl, isEncrypted, receiverCode } = req.body;
+  const { sessionId, fileName, fileSize, fileType, fileDataUrl, isEncrypted, receiverCode, donorCode: requestedDonorCode } = req.body;
   cleanupSessions();
 
   let session = activeSessions.get(sessionId);
@@ -257,7 +257,7 @@ app.post("/api/ephemeral/donor-attach-file", (req, res) => {
     return res.status(404).json({ error: "Sessione non valida, revocata o già cancellata." });
   }
 
-  const donorCode = generate4DigitCode();
+  const donorCode = requestedDonorCode || generate4DigitCode();
 
   session.fileName = fileName || "documento.pdf";
   session.fileSize = fileSize || "1.2 MB";

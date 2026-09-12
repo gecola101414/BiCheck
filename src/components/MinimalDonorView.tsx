@@ -212,14 +212,14 @@ export const MinimalDonorView: React.FC = () => {
         setVaultFiles(updatedVault);
       }
 
-      // Generate provisional donor code to form E2EE secret key
-      const provisionalDonorCode = Math.floor(1000 + Math.random() * 9000).toString();
+      // Generate 4-digit Donor Code for E2EE secret key derivation
+      const generatedDonorCode = Math.floor(1000 + Math.random() * 9000).toString();
 
       // Encrypt file client-side using AES-256-GCM before sending!
       const encryptedPayload = await encryptPayload(
         selectedFile.dataUrl,
         session.receiverCode,
-        provisionalDonorCode
+        generatedDonorCode
       );
 
       const result = await donorAttachFile(
@@ -228,7 +228,8 @@ export const MinimalDonorView: React.FC = () => {
         selectedFile.size,
         selectedFile.type,
         encryptedPayload,
-        session.receiverCode
+        session.receiverCode,
+        generatedDonorCode
       );
 
       setSession(result.session);

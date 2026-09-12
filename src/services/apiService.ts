@@ -181,17 +181,27 @@ export async function donorAttachFile(
   fileSize: string,
   fileType: string,
   fileDataUrl: string,
-  receiverCode?: string
+  receiverCode?: string,
+  donorCodeInput?: string
 ): Promise<{ session: EphemeralSession; donorCode: string }> {
   let updatedSession: EphemeralSession | null = null;
-  let donorCode: string | null = null;
+  let donorCode: string | null = donorCodeInput || null;
 
   // 1. Send to Express Server (handles up to 500 MB)
   try {
     const res = await fetch('/api/ephemeral/donor-attach-file', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ sessionId, fileName, fileSize, fileType, fileDataUrl, isEncrypted: true, receiverCode })
+      body: JSON.stringify({
+        sessionId,
+        fileName,
+        fileSize,
+        fileType,
+        fileDataUrl,
+        isEncrypted: true,
+        receiverCode,
+        donorCode: donorCodeInput
+      })
     });
     const contentType = res.headers.get('content-type') || '';
     if (contentType.includes('application/json')) {
