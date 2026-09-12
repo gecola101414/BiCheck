@@ -35,6 +35,7 @@ export const QuickDirectTransfer: React.FC = () => {
   const [generatedQuickCode, setGeneratedQuickCode] = useState<string | null>(null);
   const [copiedCode, setCopiedCode] = useState(false);
   const [sendError, setSendError] = useState<string | null>(null);
+  const [sendTimer, setSendTimer] = useState<number>(60);
 
   // --- RECEIVE STATE ---
   const [inputQuickCode, setInputQuickCode] = useState('');
@@ -43,6 +44,33 @@ export const QuickDirectTransfer: React.FC = () => {
   const [isDownloading, setIsDownloading] = useState(false);
   const [downloadSuccess, setDownloadSuccess] = useState(false);
   const [receiveError, setReceiveError] = useState<string | null>(null);
+  const [receiveTimer, setReceiveTimer] = useState<number>(60);
+
+  // Send Timer Countdown Effect
+  React.useEffect(() => {
+    let timer: any = null;
+    if (uploadedSession && sendTimer > 0) {
+      timer = setInterval(() => {
+        setSendTimer(prev => (prev > 0 ? prev - 1 : 0));
+      }, 1000);
+    }
+    return () => {
+      if (timer) clearInterval(timer);
+    };
+  }, [uploadedSession, sendTimer]);
+
+  // Receive Timer Countdown Effect
+  React.useEffect(() => {
+    let timer: any = null;
+    if (foundSession && receiveTimer > 0 && !downloadSuccess) {
+      timer = setInterval(() => {
+        setReceiveTimer(prev => (prev > 0 ? prev - 1 : 0));
+      }, 1000);
+    }
+    return () => {
+      if (timer) clearInterval(timer);
+    };
+  }, [foundSession, receiveTimer, downloadSuccess]);
 
   // Utility format file size
   const formatSize = (bytes: number): string => {
@@ -100,11 +128,12 @@ export const QuickDirectTransfer: React.FC = () => {
             selectedFile.name,
             selectedFile.size,
             selectedFile.type,
-            selectedFile.file // Passes raw File / Blob directly
+            fileContent as string
           );
 
           setUploadedSession(result.session);
           setGeneratedQuickCode(result.quickCode);
+          setSendTimer(60);
         } catch (err: any) {
           setSendError(err.message || 'Errore durante il caricamento del file.');
         } finally {
@@ -112,7 +141,7 @@ export const QuickDirectTransfer: React.FC = () => {
         }
       };
 
-      reader.readAsArrayBuffer(selectedFile.file);
+      reader.readAsDataURL(selectedFile.file);
     } catch (err: any) {
       setSendError(err.message || 'Errore imprevisto.');
       setIsUploading(false);
@@ -152,6 +181,7 @@ export const QuickDirectTransfer: React.FC = () => {
     try {
       const session = await directLookupCode(inputQuickCode.trim());
       setFoundSession(session);
+      setReceiveTimer(60);
     } catch (err: any) {
       setReceiveError(err.message || 'Codice non trovato, scaduto o file auto-distrutto.');
     } finally {
@@ -371,6 +401,11 @@ export const QuickDirectTransfer: React.FC = () => {
                     {copiedCode ? <Check className="w-4 h-4 text-emerald-400" /> : <Copy className="w-4 h-4" />}
                   </button>
                 </div>
+                <div className="pt-2 text-center">
+                  <span className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-mono font-bold border ${sendTimer > 10 ? 'bg-amber-500/10 text-amber-300 border-amber-500/30' : 'bg-red-500/20 text-red-300 border-red-500/40 animate-pulse'}`}>
+                    ⏱️ Scadenza Codice: {sendTimer}s (1 min max)
+                  </span>
+                </div>
               </div>
 
               <div className="p-3.5 rounded-2xl bg-cyan-500/10 border border-cyan-500/30 text-xs text-cyan-200 text-left space-y-1">
@@ -477,6 +512,11 @@ export const QuickDirectTransfer: React.FC = () => {
                   {foundSession.fileName}
                 </h3>
                 <p className="text-xs text-slate-400 font-mono mt-0.5">{foundSession.fileSize}</p>
+                <div className="mt-2">
+                  <span className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-mono font-bold border ${receiveTimer > 10 ? 'bg-amber-500/10 text-amber-300 border-amber-500/30' : 'bg-red-500/20 text-red-300 border-red-500/40 animate-pulse'}`}>
+                    ⏱️ Scade tra: {receiveTimer}s
+                  </span>
+                </div>
               </div>
 
               <div className="p-3.5 rounded-2xl bg-slate-950 border border-slate-800 text-xs text-slate-300 text-left space-y-1">

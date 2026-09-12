@@ -41,15 +41,12 @@ export async function directUploadFile(
   fileName: string,
   fileSize: string,
   fileType: string,
-  fileDataUrlOrBlob: string | Blob
+  fileDataUrl: string
 ): Promise<{ session: EphemeralSession; quickCode: string }> {
   let session: EphemeralSession | null = null;
   let quickCode: string | null = null;
 
-  const isString = typeof fileDataUrlOrBlob === 'string';
-  const dataUrlPayload = isString && (fileDataUrlOrBlob as string).length < 2000000 ? fileDataUrlOrBlob : undefined;
-
-  // 1. Post metadata & optional preview to Express
+  // 1. Post metadata & complete file Data URL payload to Express
   try {
     const res = await fetch('/api/ephemeral/direct-upload', {
       method: 'POST',
@@ -58,7 +55,7 @@ export async function directUploadFile(
         fileName,
         fileSize,
         fileType,
-        fileDataUrl: dataUrlPayload
+        fileDataUrl
       })
     });
     if (res.ok) {
@@ -81,7 +78,7 @@ export async function directUploadFile(
       receiverMessage: "Trasferimento Diretto Veloce",
       receiverCode: "0000",
       receiverCodeCreatedAt: now,
-      receiverCodeExpiresAt: now + 60 * 60 * 1000,
+      receiverCodeExpiresAt: now + 60 * 1000, // 1 minute validity
       quickCode,
       fileName,
       fileSize,
@@ -91,14 +88,6 @@ export async function directUploadFile(
       status: 'unlocked',
       createdAt: now
     };
-  }
-
-  // Upload raw binary payload if present
-  if (!isString || (fileDataUrlOrBlob as string).length >= 2000000) {
-    const blobToUpload = isString 
-      ? new Blob([fileDataUrlOrBlob as string], { type: fileType })
-      : (fileDataUrlOrBlob as Blob);
-    await uploadRawBlob(session.id, blobToUpload);
   }
 
   // Sync to Firestore Cloud DB
@@ -333,10 +322,7 @@ export async function donorAttachFile(
   let updatedSession: EphemeralSession | null = null;
   let donorCode: string | null = donorCodeInput || null;
 
-  const isLargePayload = fileDataUrl && fileDataUrl.length >= 2000000;
-  const jsonPayload = isLargePayload ? undefined : fileDataUrl;
-
-  // 1. Send to Express Server (handles metadata + raw upload for large payloads)
+  // 1. Send to Express Server
   try {
     const res = await fetch('/api/ephemeral/donor-attach-file', {
       method: 'POST',
@@ -346,7 +332,7 @@ export async function donorAttachFile(
         fileName,
         fileSize,
         fileType,
-        fileDataUrl: jsonPayload,
+        fileDataUrl,
         isEncrypted: true,
         receiverCode,
         donorCode: donorCodeInput
@@ -359,10 +345,6 @@ export async function donorAttachFile(
         updatedSession = data.session;
         donorCode = data.donorCode;
       }
-    }
-
-    if (isLargePayload) {
-      await uploadRawBlob(sessionId, new Blob([fileDataUrl], { type: 'text/plain' }));
     }
   } catch (err) {
     console.warn('[API] Express server attach file warning:', err);

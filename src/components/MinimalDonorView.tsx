@@ -9,7 +9,7 @@ export const MinimalDonorView: React.FC = () => {
   const [receiverCodeInput, setReceiverCodeInput] = useState('');
   const [session, setSession] = useState<EphemeralSession | null>(null);
   const [donorCode, setDonorCode] = useState<string | null>(null);
-  const [donorTimer, setDonorTimer] = useState<number>(900);
+  const [donorTimer, setDonorTimer] = useState<number>(60);
 
   // File Upload state
   const [selectedFile, setSelectedFile] = useState<{

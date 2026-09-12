@@ -9,8 +9,8 @@ export const MinimalReceiverView: React.FC = () => {
   const [session, setSession] = useState<EphemeralSession | null>(null);
   const [donorCodeInput, setDonorCodeInput] = useState('');
   
-  const [receiverTimer, setReceiverTimer] = useState<number>(900);
-  const [unlockedTimer, setUnlockedTimer] = useState<number>(1800);
+  const [receiverTimer, setReceiverTimer] = useState<number>(60);
+  const [unlockedTimer, setUnlockedTimer] = useState<number>(60);
   const [isLoading, setIsLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [isPurged, setIsPurged] = useState(false);
@@ -74,7 +74,7 @@ export const MinimalReceiverView: React.FC = () => {
     try {
       const newSession = await requestReceiverCode(customMessage);
       setSession(newSession);
-      setReceiverTimer(900);
+      setReceiverTimer(60);
       setDonorCodeInput('');
     } catch (err: any) {
       setErrorMsg(err.message || 'Errore durante la generazione del codice');

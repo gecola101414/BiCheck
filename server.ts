@@ -128,23 +128,23 @@ function generate4DigitCode(): string {
   return Math.floor(1000 + Math.random() * 9000).toString();
 }
 
-// Automatic cleanup of expired sessions (Max 1 hour lifespan rule)
-const ONE_HOUR_MS = 60 * 60 * 1000;
+// Automatic cleanup of expired sessions (1 minute lifespan rule as requested)
+const ONE_MINUTE_MS = 60 * 1000;
 
 function cleanupSessions() {
   const now = Date.now();
   let changed = false;
 
   for (const [id, session] of activeSessions.entries()) {
-    const isExceededOneHour = (now - session.createdAt) > ONE_HOUR_MS;
+    const isExceededOneMinute = (now - session.createdAt) > ONE_MINUTE_MS;
 
-    if (session.status !== 'purged' && session.status !== 'expired' && isExceededOneHour) {
+    if (session.status !== 'purged' && session.status !== 'expired' && isExceededOneMinute) {
       session.status = 'expired';
       delete session.fileDataUrl;
       delete session.fileUrl;
       purgeFileBlob(id);
       changed = true;
-      console.log(`[GECOLASHARE AUTO-CLEANUP] Session ${id} exceeded 1 hour limit. Purged.`);
+      console.log(`[GECOLASHARE AUTO-CLEANUP] Session ${id} reached 1 minute limit. Auto-purged from server.`);
     } else if (session.status === 'pending_donor_upload' && now > session.receiverCodeExpiresAt) {
       session.status = 'expired';
       delete session.fileDataUrl;
@@ -171,35 +171,13 @@ function cleanupSessions() {
   }
 }
 
-setInterval(cleanupSessions, 5000);
+setInterval(cleanupSessions, 2000);
 
 // ==================== GECOLASHARE EPHEMERAL API ====================
 
 app.get("/api/health", (req, res) => {
   cleanupSessions();
   res.json({ status: "ok", appName: "GecolaShare", version: "2026@AETERNA", activeCount: activeSessions.size });
-});
-
-// Raw binary blob upload for large files (up to 1 GB)
-app.post("/api/ephemeral/upload-raw-blob/:sessionId", express.raw({ type: "*/*", limit: "1500mb" }), (req, res) => {
-  const { sessionId } = req.params;
-  const buffer = req.body as Buffer;
-
-  if (!buffer || buffer.length === 0) {
-    return res.status(400).json({ error: "Buffer dati vuoto" });
-  }
-
-  const filePath = path.join(BLOBS_DIR, `${sessionId}.dat`);
-  fs.writeFileSync(filePath, buffer);
-  fileMemoryStore.set(sessionId, buffer.toString("utf-8"));
-  console.log(`[SERVER RAW BLOB] Saved ${buffer.length} bytes binary file to ${filePath}`);
-
-  let session = activeSessions.get(sessionId);
-  if (session) {
-    session.fileUrl = `/api/ephemeral/download/${sessionId}`;
-  }
-
-  res.json({ success: true, bytesSaved: buffer.length });
 });
 
 // MODE 3: DIRECT QUICK TRANSFER (Senza Cifratura E2EE) - Upload
@@ -216,7 +194,7 @@ app.post("/api/ephemeral/direct-upload", (req, res) => {
     receiverMessage: "Trasferimento Diretto Veloce",
     receiverCode: "0000",
     receiverCodeCreatedAt: now,
-    receiverCodeExpiresAt: now + 60 * 60 * 1000,
+    receiverCodeExpiresAt: now + ONE_MINUTE_MS,
     quickCode,
     fileName: fileName || "documento.pdf",
     fileSize: fileSize || "1.0 MB",
@@ -224,7 +202,8 @@ app.post("/api/ephemeral/direct-upload", (req, res) => {
     isEncrypted: false,
     status: "unlocked",
     createdAt: now,
-    donorCodeExpiresAt: now + 60 * 60 * 1000
+    donorCodeExpiresAt: now + ONE_MINUTE_MS,
+    unlockedExpiresAt: now + ONE_MINUTE_MS
   };
 
   if (fileDataUrl) {
@@ -275,7 +254,7 @@ app.post("/api/ephemeral/request", (req, res) => {
     receiverMessage,
     receiverCode,
     receiverCodeCreatedAt: now,
-    receiverCodeExpiresAt: now + 60 * 60 * 1000, // 1 hour validity
+    receiverCodeExpiresAt: now + ONE_MINUTE_MS, // 1 minute validity
     status: "pending_donor_upload",
     createdAt: now
   };
@@ -327,7 +306,7 @@ app.post("/api/ephemeral/donor-attach-file", (req, res) => {
       receiverMessage: "Richiesta documento",
       receiverCode: receiverCode || "0000",
       receiverCodeCreatedAt: now,
-      receiverCodeExpiresAt: now + 60 * 60 * 1000,
+      receiverCodeExpiresAt: now + ONE_MINUTE_MS,
       status: "pending_donor_upload",
       createdAt: now
     };
@@ -353,7 +332,7 @@ app.post("/api/ephemeral/donor-attach-file", (req, res) => {
 
   session.donorCode = donorCode;
   session.donorCodeCreatedAt = now;
-  session.donorCodeExpiresAt = now + 60 * 60 * 1000;
+  session.donorCodeExpiresAt = now + ONE_MINUTE_MS;
   session.status = "pending_receiver_unlock";
 
   saveSessionsToDisk();
@@ -378,10 +357,10 @@ app.post("/api/ephemeral/receiver-unlock", (req, res) => {
         receiverMessage: "Richiesta documento",
         receiverCode: "0000",
         receiverCodeCreatedAt: now,
-        receiverCodeExpiresAt: now + 60 * 60 * 1000,
+        receiverCodeExpiresAt: now + ONE_MINUTE_MS,
         donorCode: donorCode,
         donorCodeCreatedAt: now,
-        donorCodeExpiresAt: now + 60 * 60 * 1000,
+        donorCodeExpiresAt: now + ONE_MINUTE_MS,
         status: "pending_receiver_unlock",
         createdAt: now
       };
@@ -408,14 +387,14 @@ app.post("/api/ephemeral/receiver-unlock", (req, res) => {
   const now = Date.now();
   session.status = "unlocked";
   session.unlockedAt = now;
-  session.unlockedExpiresAt = now + 60 * 60 * 1000;
+  session.unlockedExpiresAt = now + ONE_MINUTE_MS;
 
   saveSessionsToDisk();
   console.log(`[GECOLASHARE] File unlocked for ${sessionId}`);
   res.json({ success: true, session });
 });
 
-// Dedicated File Stream Endpoint (Serves encrypted file payload for client-side decryption)
+// Dedicated File Stream Endpoint (Serves file payload for client download)
 app.get("/api/ephemeral/download/:sessionId", (req, res) => {
   cleanupSessions();
   const session = activeSessions.get(req.params.sessionId);
@@ -430,6 +409,18 @@ app.get("/api/ephemeral/download/:sessionId", (req, res) => {
     return res.status(404).send("File non trovato sul server.");
   }
 
+  // Check if fileData is a Base64 Data URL (e.g., data:application/pdf;base64,JVBERi...)
+  const match = fileData.match(/^data:(.*?);base64,(.*)$/);
+  if (match) {
+    const mimeType = match[1] || session?.fileType || "application/octet-stream";
+    const base64Data = match[2];
+    const buffer = Buffer.from(base64Data, "base64");
+    res.setHeader("Content-Type", mimeType);
+    res.setHeader("Content-Disposition", `attachment; filename="${encodeURIComponent(session?.fileName || "documento")}"`);
+    return res.send(buffer);
+  }
+
+  // Fallback for raw text / E2EE encrypted payload
   res.setHeader("Content-Type", "text/plain");
   res.send(fileData);
 });
