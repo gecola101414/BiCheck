@@ -5,7 +5,7 @@ import { createServer as createViteServer } from "vite";
 
 const app = express();
 
-// Set 500 MB payload limit for large real files (PDFs, Images, Docs)
+// Set 500 MB payload limit for E2EE encrypted real files
 app.use(express.json({ limit: "500mb" }));
 app.use(express.urlencoded({ limit: "500mb", extended: true }));
 
@@ -35,9 +35,11 @@ interface EphemeralSessionInternal {
   fileType?: string;
   fileDataUrl?: string;
   fileUrl?: string;
-  status: 'pending_donor_upload' | 'pending_receiver_unlock' | 'unlocked' | 'revoked' | 'expired';
+  isEncrypted?: boolean;
+  status: 'pending_donor_upload' | 'pending_receiver_unlock' | 'unlocked' | 'purged' | 'revoked' | 'expired';
   unlockedAt?: number;
   unlockedExpiresAt?: number;
+  purgedAt?: number;
   createdAt: number;
 }
 
@@ -73,13 +75,14 @@ function getFileBlob(sessionId: string): string | null {
   return null;
 }
 
-// Delete file blob from memory and disk
-function deleteFileBlob(sessionId: string) {
+// Instant Purge: Delete file blob permanently from memory & disk
+function purgeFileBlob(sessionId: string) {
   fileMemoryStore.delete(sessionId);
   try {
     const filePath = path.join(BLOBS_DIR, `${sessionId}.dat`);
     if (fs.existsSync(filePath)) {
       fs.unlinkSync(filePath);
+      console.log(`[SERVER PURGE] File blob ${sessionId}.dat permanently deleted from disk.`);
     }
   } catch (err) {
     // ignore
@@ -133,17 +136,17 @@ function cleanupSessions() {
     if (session.status === 'pending_donor_upload' && now > session.receiverCodeExpiresAt) {
       session.status = 'expired';
       delete session.fileDataUrl;
-      deleteFileBlob(id);
+      purgeFileBlob(id);
       changed = true;
     } else if (session.status === 'pending_receiver_unlock' && session.donorCodeExpiresAt && now > session.donorCodeExpiresAt) {
       session.status = 'expired';
       delete session.fileDataUrl;
-      deleteFileBlob(id);
+      purgeFileBlob(id);
       changed = true;
     } else if (session.status === 'unlocked' && session.unlockedExpiresAt && now > session.unlockedExpiresAt) {
-      session.status = 'expired';
+      session.status = 'purged';
       delete session.fileDataUrl;
-      deleteFileBlob(id);
+      purgeFileBlob(id);
       changed = true;
     }
   }
@@ -155,17 +158,17 @@ function cleanupSessions() {
 
 setInterval(cleanupSessions, 5000);
 
-// ==================== EPHEMERAL API ====================
+// ==================== GECOLASHARE EPHEMERAL API ====================
 
 app.get("/api/health", (req, res) => {
   cleanupSessions();
-  res.json({ status: "ok", activeCount: activeSessions.size });
+  res.json({ status: "ok", appName: "GecolaShare", version: "2026@AETERNA", activeCount: activeSessions.size });
 });
 
 // Step 1: Receiver generates a customized request & 4-digit Receiver Code
 app.post("/api/ephemeral/request", (req, res) => {
   const { message } = req.body;
-  const receiverMessage = message?.trim() || "Ciao! Mi mandi il tuo documento di identità per favore?";
+  const receiverMessage = message?.trim() || "Ciao! Mi mandi il tuo documento per favore?";
   
   const now = Date.now();
   const receiverCode = generate4DigitCode();
@@ -184,7 +187,7 @@ app.post("/api/ephemeral/request", (req, res) => {
   activeSessions.set(sessionId, session);
   saveSessionsToDisk();
 
-  console.log(`[SERVER] New Receiver Code generated: ${receiverCode} (Session ID: ${sessionId})`);
+  console.log(`[GECOLASHARE] Receiver Code generated: ${receiverCode} (Session: ${sessionId})`);
   res.json({ success: true, session });
 });
 
@@ -200,29 +203,27 @@ app.post("/api/ephemeral/donor-load-request", (req, res) => {
   }
 
   const matches = Array.from(activeSessions.values())
-    .filter(s => s.receiverCode === codeStr && s.status !== "revoked" && s.status !== "expired")
+    .filter(s => s.receiverCode === codeStr && s.status !== "revoked" && s.status !== "expired" && s.status !== "purged")
     .sort((a, b) => b.createdAt - a.createdAt);
 
   if (matches.length === 0) {
-    console.warn(`[SERVER] Lookup failed for Receiver Code: "${codeStr}". Active sessions count: ${activeSessions.size}`);
     return res.status(404).json({ 
       error: "Codice ricevente invalido o scaduto. Ricontrolla le 4 cifre." 
     });
   }
 
   const targetSession = matches[0];
-  console.log(`[SERVER] Match found for Receiver Code: ${codeStr} -> Session ${targetSession.id}`);
   res.json({ success: true, session: targetSession });
 });
 
-// Step 3: Donor attaches file & generates 4-digit Donor Code
+// Step 3: Donor attaches E2EE Encrypted file & generates 4-digit Donor Code
 app.post("/api/ephemeral/donor-attach-file", (req, res) => {
-  const { sessionId, fileName, fileSize, fileType, fileDataUrl } = req.body;
+  const { sessionId, fileName, fileSize, fileType, fileDataUrl, isEncrypted } = req.body;
   cleanupSessions();
 
   const session = activeSessions.get(sessionId);
-  if (!session || session.status === "revoked" || session.status === "expired") {
-    return res.status(404).json({ error: "Sessione non valida o scaduta." });
+  if (!session || session.status === "revoked" || session.status === "expired" || session.status === "purged") {
+    return res.status(404).json({ error: "Sessione non valida, revocata o già cancellata." });
   }
 
   const now = Date.now();
@@ -231,6 +232,7 @@ app.post("/api/ephemeral/donor-attach-file", (req, res) => {
   session.fileName = fileName || "documento.pdf";
   session.fileSize = fileSize || "1.2 MB";
   session.fileType = fileType || "application/pdf";
+  session.isEncrypted = !!isEncrypted;
   
   if (fileDataUrl) {
     saveFileBlob(sessionId, fileDataUrl);
@@ -244,11 +246,11 @@ app.post("/api/ephemeral/donor-attach-file", (req, res) => {
 
   session.donorCode = donorCode;
   session.donorCodeCreatedAt = now;
-  session.donorCodeExpiresAt = now + 15 * 60 * 1000; // 15 mins
+  session.donorCodeExpiresAt = now + 15 * 60 * 1000;
   session.status = "pending_receiver_unlock";
 
   saveSessionsToDisk();
-  console.log(`[SERVER] File attached for session ${sessionId}. Donor Code: ${donorCode}`);
+  console.log(`[GECOLASHARE] E2EE Encrypted file attached for ${sessionId}. Donor Code: ${donorCode}`);
   res.json({ success: true, session, donorCode });
 });
 
@@ -258,8 +260,8 @@ app.post("/api/ephemeral/receiver-unlock", (req, res) => {
   cleanupSessions();
 
   const session = activeSessions.get(sessionId);
-  if (!session) {
-    return res.status(404).json({ error: "Sessione non trovata." });
+  if (!session || session.status === "purged") {
+    return res.status(404).json({ error: "Sessione non trovata o file già auto-distrutto." });
   }
 
   const codeStr = donorCode ? donorCode.toString().replace(/\D/g, "") : "";
@@ -275,47 +277,58 @@ app.post("/api/ephemeral/receiver-unlock", (req, res) => {
   const now = Date.now();
   session.status = "unlocked";
   session.unlockedAt = now;
-  session.unlockedExpiresAt = now + 30 * 60 * 1000; // 30 minutes download window
+  session.unlockedExpiresAt = now + 30 * 60 * 1000;
 
   saveSessionsToDisk();
-  console.log(`[SERVER] File unlocked successfully for session ${sessionId}`);
+  console.log(`[GECOLASHARE] File unlocked for ${sessionId}`);
   res.json({ success: true, session });
 });
 
-// Dedicated File Download / Stream Endpoint (up to 500 MB)
+// Dedicated File Stream Endpoint with AUTO-PURGE ON DOWNLOAD
 app.get("/api/ephemeral/download/:sessionId", (req, res) => {
   cleanupSessions();
   const session = activeSessions.get(req.params.sessionId);
-  if (!session || session.status === "revoked" || session.status === "expired") {
-    return res.status(404).send("File non disponibile, revocato o scaduto.");
+  if (!session || session.status === "revoked" || session.status === "expired" || session.status === "purged") {
+    return res.status(404).send("File non disponibile: auto-distrutto, revocato o scaduto.");
   }
 
   const fileData = session.fileDataUrl || getFileBlob(req.params.sessionId);
   if (!fileData) {
-    return res.status(404).send("File non trovato.");
+    return res.status(404).send("File non trovato sul server.");
   }
 
   const commaIdx = fileData.indexOf(",");
+  let buffer: Buffer;
+  let mimeType = session.fileType || "application/octet-stream";
+
   if (commaIdx !== -1 && fileData.startsWith("data:")) {
     const header = fileData.substring(0, commaIdx);
     const base64Str = fileData.substring(commaIdx + 1);
-    
     const mimeMatch = header.match(/^data:(.+);base64/);
-    const mimeType = mimeMatch ? mimeMatch[1] : (session.fileType || "application/pdf");
-    const buffer = Buffer.from(base64Str, "base64");
-
-    const rawFileName = session.fileName || "documento.pdf";
-    const safeFileName = encodeURIComponent(rawFileName).replace(/['()]/g, escape).replace(/\*/g, "%2A");
-
-    res.setHeader("Content-Type", mimeType);
-    res.setHeader("Content-Length", buffer.length.toString());
-    res.setHeader("Content-Disposition", `attachment; filename="${rawFileName.replace(/["\r\n]/g, "")}"; filename*=UTF-8''${safeFileName}`);
-    return res.send(buffer);
+    if (mimeMatch) mimeType = mimeMatch[1];
+    buffer = Buffer.from(base64Str, "base64");
+  } else {
+    buffer = Buffer.from(fileData, "utf-8");
   }
 
-  // Plain text fallback
-  res.setHeader("Content-Type", session.fileType || "application/octet-stream");
-  res.send(fileData);
+  const rawFileName = session.fileName || "documento.pdf";
+  const safeFileName = encodeURIComponent(rawFileName).replace(/['()]/g, escape).replace(/\*/g, "%2A");
+
+  res.setHeader("Content-Type", mimeType);
+  res.setHeader("Content-Length", buffer.length.toString());
+  res.setHeader("Content-Disposition", `attachment; filename="${rawFileName.replace(/["\r\n]/g, "")}"; filename*=UTF-8''${safeFileName}`);
+  
+  // Send file buffer to client
+  res.send(buffer);
+
+  // AUTO-PURGE / ZERO TRACE: Instantly wipe file blob from memory and disk after serving!
+  session.status = "purged";
+  session.purgedAt = Date.now();
+  delete session.fileDataUrl;
+  delete session.fileUrl;
+  purgeFileBlob(req.params.sessionId);
+  saveSessionsToDisk();
+  console.log(`[GECOLASHARE ZERO-TRACE] File for session ${req.params.sessionId} served and INSTANTLY WIPED from server memory & disk!`);
 });
 
 // Donor Kill Switch: Revoke connection immediately
@@ -325,9 +338,10 @@ app.post("/api/ephemeral/donor-revoke", (req, res) => {
   if (session) {
     session.status = "revoked";
     delete session.fileDataUrl;
-    deleteFileBlob(sessionId);
+    delete session.fileUrl;
+    purgeFileBlob(sessionId);
     saveSessionsToDisk();
-    console.log(`[SERVER] Session ${sessionId} REVOKED by donor`);
+    console.log(`[GECOLASHARE] Session ${sessionId} REVOKED by donor`);
   }
   res.json({ success: true });
 });
@@ -339,7 +353,9 @@ app.get("/api/ephemeral/status/:sessionId", (req, res) => {
   if (!session) {
     return res.status(404).json({ error: "Sessione non trovata" });
   }
-  session.fileUrl = `/api/ephemeral/download/${session.id}`;
+  if (session.status !== 'purged') {
+    session.fileUrl = `/api/ephemeral/download/${session.id}`;
+  }
   res.json({ success: true, session });
 });
 
@@ -360,7 +376,7 @@ async function startServer() {
   }
 
   app.listen(PORT, "0.0.0.0", () => {
-    console.log(`Server SafeHandshake attivo su http://0.0.0.0:${PORT}`);
+    console.log(`GecolaShare 2026@AETERNA attivo su http://0.0.0.0:${PORT}`);
   });
 }
 

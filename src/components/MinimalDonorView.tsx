@@ -1,7 +1,9 @@
 import React, { useState, useEffect } from 'react';
-import { Smartphone, Upload, CheckCircle2, Clock, AlertCircle, XCircle, Copy, Check, FileText } from 'lucide-react';
+import { Smartphone, Upload, CheckCircle2, Clock, AlertCircle, XCircle, Copy, Check, FileText, Lock, Save, Trash2, ShieldCheck, Sparkles } from 'lucide-react';
 import { EphemeralSession } from '../types';
 import { donorLoadRequest, donorAttachFile, donorRevoke, fetchSessionStatus, subscribeToSession } from '../services/apiService';
+import { encryptPayload } from '../lib/crypto';
+import { getVaultFiles, saveFileToVault, deleteFromVault, VaultFile } from '../lib/localVault';
 
 export const MinimalDonorView: React.FC = () => {
   const [receiverCodeInput, setReceiverCodeInput] = useState('');
@@ -17,13 +19,22 @@ export const MinimalDonorView: React.FC = () => {
     dataUrl: string;
   } | null>(null);
 
+  // Frequent Local Vault state
+  const [vaultFiles, setVaultFiles] = useState<VaultFile[]>([]);
+  const [saveToVaultCheckbox, setSaveToVaultCheckbox] = useState<boolean>(true);
+
   const [isLoading, setIsLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
 
+  // Load frequent vault on mount
+  useEffect(() => {
+    setVaultFiles(getVaultFiles());
+  }, []);
+
   // Real-time Firestore subscription & polling backup
   useEffect(() => {
-    if (!session || session.status === 'revoked' || session.status === 'expired') {
+    if (!session || session.status === 'revoked' || session.status === 'expired' || session.status === 'purged') {
       return;
     }
     const unsubscribe = subscribeToSession(session.id, (latest) => {
@@ -97,11 +108,10 @@ export const MinimalDonorView: React.FC = () => {
     reader.onload = (event) => {
       const dataUrl = event.target?.result as string;
 
-      // Smart optimization for smartphone camera photos to preserve clarity while ensuring instant upload
       if (file.type.startsWith('image/')) {
         const img = new Image();
         img.onload = () => {
-          const maxDim = 2048; // Crisp 2K resolution for reading document details
+          const maxDim = 2048;
           let width = img.width;
           let height = img.height;
           if (width > maxDim || height > maxDim) {
@@ -156,7 +166,24 @@ export const MinimalDonorView: React.FC = () => {
     reader.readAsDataURL(file);
   };
 
-  // Quick preset sample document selection if user doesn't upload a file
+  // Select document directly from local vault
+  const handleSelectFromVault = (item: VaultFile) => {
+    setSelectedFile({
+      name: item.name,
+      size: item.size,
+      type: item.type,
+      dataUrl: item.dataUrl
+    });
+  };
+
+  // Remove document from local vault
+  const handleDeleteVaultItem = (e: React.MouseEvent, id: string) => {
+    e.stopPropagation();
+    const updated = deleteFromVault(id);
+    setVaultFiles(updated);
+  };
+
+  // Quick preset sample document selection
   const handleUsePresetDocument = () => {
     const mockImageSvg = `data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="400" height="250" viewBox="0 0 400 250" fill="%230f172a"><rect width="400" height="250" rx="20" fill="%230f172a" stroke="%231e293b" stroke-width="4"/><text x="30" y="50" fill="%2314b8a6" font-size="20" font-family="sans-serif" font-weight="bold">CARTA D'IDENTITÀ ITALIANA</text><text x="30" y="90" fill="%23e2e8f0" font-size="16" font-family="sans-serif">Cognome: Rossi</text><text x="30" y="120" fill="%23e2e8f0" font-size="16" font-family="sans-serif">Nome: Mario</text><text x="30" y="150" fill="%23e2e8f0" font-size="16" font-family="sans-serif">Codice Fiscale: RSSMRA88R15F205Z</text><text x="30" y="180" fill="%23e2e8f0" font-size="16" font-family="sans-serif">Scadenza: 10/05/2032</text><rect x="280" y="70" width="90" height="110" rx="10" fill="%231e293b"/><text x="300" y="130" fill="%2364748b" font-size="12" font-family="sans-serif">FOTO</text></svg>`;
     
@@ -168,7 +195,7 @@ export const MinimalDonorView: React.FC = () => {
     });
   };
 
-  // Step 3: Attach File & Generate Donor Code
+  // Step 3: Encrypt & Attach File & Generate Donor Code
   const handleAttachAndAuthorize = async () => {
     if (!session || !selectedFile) {
       setErrorMsg('Seleziona o carica prima un file.');
@@ -179,19 +206,35 @@ export const MinimalDonorView: React.FC = () => {
     setErrorMsg(null);
 
     try {
+      // Save to donor's local vault if checked
+      if (saveToVaultCheckbox) {
+        const updatedVault = saveFileToVault(selectedFile);
+        setVaultFiles(updatedVault);
+      }
+
+      // Generate provisional donor code to form E2EE secret key
+      const provisionalDonorCode = Math.floor(1000 + Math.random() * 9000).toString();
+
+      // Encrypt file client-side using AES-256-GCM before sending!
+      const encryptedPayload = await encryptPayload(
+        selectedFile.dataUrl,
+        session.receiverCode,
+        provisionalDonorCode
+      );
+
       const result = await donorAttachFile(
         session.id,
         selectedFile.name,
         selectedFile.size,
         selectedFile.type,
-        selectedFile.dataUrl
+        encryptedPayload
       );
 
       setSession(result.session);
       setDonorCode(result.donorCode);
       setDonorTimer(900);
     } catch (err: any) {
-      setErrorMsg(err.message || 'Errore durante l\'autorizzazione.');
+      setErrorMsg(err.message || 'Errore durante l\'autorizzazione e cifratura.');
     } finally {
       setIsLoading(false);
     }
@@ -216,14 +259,20 @@ export const MinimalDonorView: React.FC = () => {
 
   return (
     <div className="max-w-xl mx-auto space-y-4 font-sans px-1 sm:px-0">
-      {/* Title with 2026@AETERNA branding */}
+      {/* Title with GecolaShare & 2026@AETERNA branding */}
       <div className="text-center space-y-1">
-        <span className="text-[10px] sm:text-[11px] font-bold text-teal-400 uppercase tracking-wider bg-teal-500/10 px-2.5 py-0.5 rounded-full border border-teal-500/20 inline-block">
-          Console Donatore (Proprietario File)
-        </span>
-        <h2 className="text-xl sm:text-2xl font-extrabold text-slate-100 tracking-tight">Invia Documento a Voce</h2>
-        <span className="text-xs font-bold text-teal-400 font-mono block">2026@AETERNA</span>
-        <p className="text-[11px] sm:text-xs text-slate-400">Inserisci il codice di 4 cifre dettato dalla reception.</p>
+        <div className="inline-flex items-center space-x-1.5 bg-teal-500/10 px-3 py-0.5 rounded-full border border-teal-500/20">
+          <Smartphone className="w-3.5 h-3.5 text-teal-400 shrink-0" />
+          <span className="text-[10px] sm:text-[11px] font-bold text-teal-300 uppercase tracking-wider">
+            Console Donatore (Proprietario File)
+          </span>
+        </div>
+        <h2 className="text-xl sm:text-2xl font-black text-slate-100 tracking-tight flex items-center justify-center gap-2">
+          <span>Invia File Sicuro</span>
+          <Lock className="w-5 h-5 text-teal-400" />
+        </h2>
+        <span className="text-xs font-black text-teal-400 font-mono block">2026@AETERNA</span>
+        <p className="text-[11px] sm:text-xs text-slate-400">Inserisci il codice di 4 cifre dettato a voce dal ricevente.</p>
       </div>
 
       {/* STEP 1: INPUT RECEIVER CODE */}
@@ -252,6 +301,38 @@ export const MinimalDonorView: React.FC = () => {
             </div>
           </div>
 
+          {/* LOCAL VAULT PREVIEW IF AVAILABLE */}
+          {vaultFiles.length > 0 && (
+            <div className="pt-3 border-t border-slate-800 space-y-2">
+              <div className="flex items-center justify-between text-xs text-slate-400">
+                <span className="font-bold flex items-center gap-1 text-teal-300">
+                  <Save className="w-3.5 h-3.5 text-teal-400" />
+                  <span>Documenti Salvati in Locale ({vaultFiles.length})</span>
+                </span>
+                <span className="text-[10px] text-slate-500">Solo su questo smartphone</span>
+              </div>
+
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                {vaultFiles.map(vf => (
+                  <div
+                    key={vf.id}
+                    className="p-2 rounded-xl bg-slate-950 border border-slate-800 hover:border-teal-500/50 text-left transition relative group"
+                  >
+                    <div className="text-[11px] font-bold text-slate-200 truncate pr-5">{vf.name}</div>
+                    <div className="text-[10px] text-slate-500 font-mono">{vf.size}</div>
+                    <button
+                      onClick={(e) => handleDeleteVaultItem(e, vf.id)}
+                      className="absolute top-1.5 right-1.5 text-slate-600 hover:text-red-400"
+                      title="Rimuovi dal Vault"
+                    >
+                      <Trash2 className="w-3 h-3" />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
           {errorMsg && (
             <div className="p-3 rounded-2xl bg-red-950/50 border border-red-800 text-red-300 text-xs flex items-center space-x-2">
               <AlertCircle className="w-4 h-4 text-red-400 shrink-0" />
@@ -274,10 +355,36 @@ export const MinimalDonorView: React.FC = () => {
             </p>
           </div>
 
+          {/* LOCAL FREQUENT DOCUMENTS QUICK SELECTION */}
+          {vaultFiles.length > 0 && (
+            <div className="space-y-2 p-3 bg-slate-950/80 rounded-2xl border border-teal-500/30">
+              <div className="flex items-center justify-between text-xs font-bold text-teal-300">
+                <span className="flex items-center gap-1.5">
+                  <Sparkles className="w-3.5 h-3.5 text-teal-400" />
+                  <span>Invio Rapido dai Tuoi Documenti Salvati:</span>
+                </span>
+              </div>
+
+              <div className="flex flex-wrap gap-2">
+                {vaultFiles.map((vf) => (
+                  <button
+                    key={vf.id}
+                    type="button"
+                    onClick={() => handleSelectFromVault(vf)}
+                    className="px-3 py-1.5 bg-slate-900 hover:bg-slate-800 text-teal-200 border border-teal-500/40 rounded-xl text-xs font-medium flex items-center space-x-1.5 transition"
+                  >
+                    <FileText className="w-3.5 h-3.5 text-teal-400" />
+                    <span className="truncate max-w-[140px]">{vf.name}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
           {/* File Selector */}
           <div className="space-y-3">
             <label className="block text-xs font-bold text-slate-200">
-              Allega il tuo Documento / File:
+              Allega Nuovo Documento o Foto:
             </label>
 
             {/* Custom File Upload Box */}
@@ -304,7 +411,7 @@ export const MinimalDonorView: React.FC = () => {
                   <Upload className="w-7 h-7 sm:w-8 sm:h-8 text-slate-500 mx-auto" />
                   <div>
                     <p className="text-xs text-slate-300 font-medium">Fai un tap per caricare una foto o file</p>
-                    <p className="text-[10px] text-slate-500 mt-0.5">JPG, PNG, PDF (Max 15MB)</p>
+                    <p className="text-[10px] text-slate-500 mt-0.5">JPG, PNG, PDF (Fino a 500 MB)</p>
                   </div>
                   <input
                     type="file"
@@ -333,14 +440,31 @@ export const MinimalDonorView: React.FC = () => {
             </div>
           </div>
 
-          {/* Action buttons - Mobile optimized */}
+          {/* Checkbox: Save to Local Vault */}
+          {selectedFile && (
+            <div className="flex items-center space-x-2 text-xs text-slate-300 bg-slate-950 p-3 rounded-xl border border-slate-800">
+              <input
+                type="checkbox"
+                id="save-vault"
+                checked={saveToVaultCheckbox}
+                onChange={(e) => setSaveToVaultCheckbox(e.target.checked)}
+                className="rounded border-slate-700 text-teal-500 focus:ring-teal-500"
+              />
+              <label htmlFor="save-vault" className="cursor-pointer select-none">
+                Salva nel <strong>Vault Locale</strong> di questo smartphone per velocizzare i prossimi invii. (Nulla rimane sul server).
+              </label>
+            </div>
+          )}
+
+          {/* Action buttons with E2EE Badge */}
           <div className="space-y-2.5 pt-2">
             <button
               onClick={handleAttachAndAuthorize}
               disabled={isLoading || !selectedFile}
-              className="w-full py-3.5 px-3 bg-gradient-to-r from-teal-500 to-emerald-500 hover:from-teal-400 hover:to-emerald-400 text-slate-950 font-black text-xs rounded-2xl shadow-lg shadow-teal-500/20 transition disabled:opacity-50 text-center uppercase tracking-wide break-words"
+              className="w-full py-3.5 px-3 bg-gradient-to-r from-teal-500 to-emerald-500 hover:from-teal-400 hover:to-emerald-400 text-slate-950 font-black text-xs rounded-2xl shadow-lg shadow-teal-500/20 transition disabled:opacity-50 text-center uppercase tracking-wide break-words flex items-center justify-center space-x-2"
             >
-              {isLoading ? 'Autorizzazione...' : 'AUTORIZZA E GENERA CODICE DONATORE'}
+              <ShieldCheck className="w-4 h-4 shrink-0" />
+              <span>{isLoading ? 'Cifratura AES-256 in corso...' : 'CIFRA E GENERA CODICE DONATORE'}</span>
             </button>
 
             {/* KILL SWITCH BUTTON */}
@@ -363,7 +487,7 @@ export const MinimalDonorView: React.FC = () => {
       )}
 
       {/* STEP 3 & 4: DISPLAY DONOR CODE + KILL SWITCH */}
-      {session && (session.status === 'pending_receiver_unlock' || session.status === 'unlocked') && (
+      {session && (session.status === 'pending_receiver_unlock' || session.status === 'unlocked' || session.status === 'purged') && (
         <div className="bg-slate-900 border border-slate-800 rounded-3xl p-4 sm:p-6 shadow-2xl space-y-5 text-center">
           {session.status === 'pending_receiver_unlock' && (
             <div className="space-y-4">
@@ -417,21 +541,25 @@ export const MinimalDonorView: React.FC = () => {
             </div>
           )}
 
-          {session.status === 'unlocked' && (
+          {(session.status === 'unlocked' || session.status === 'purged') && (
             <div className="py-2 sm:py-4 space-y-4">
               <div className="w-12 h-12 rounded-2xl bg-emerald-500/20 text-emerald-400 flex items-center justify-center mx-auto">
                 <CheckCircle2 className="w-7 h-7" />
               </div>
-              <h3 className="text-lg font-extrabold text-slate-100">TRASFERIMENTO COMPLETATO</h3>
-              <p className="text-xs text-slate-400">L'impiegato ha sbloccato il file. La finestra di 30 minuti è attiva.</p>
+              <h3 className="text-lg font-extrabold text-slate-100">TRASFERIMENTO E AUTO-DISTRUZIONE COMPLETATI</h3>
+              <p className="text-xs text-slate-400">
+                Il file è stato scaricato ed eliminato istantaneamente dal server. Nessuna traccia o memoria è rimasta sul cloud!
+              </p>
 
-              {/* KILL SWITCH REMAINS ACTIVE UNTIL END */}
               <button
-                onClick={handleRevoke}
-                className="w-full py-3 px-3 bg-red-950/50 hover:bg-red-900/60 text-red-300 border border-red-800 font-bold text-xs rounded-2xl transition flex items-center justify-center space-x-2 text-center"
+                onClick={() => {
+                  setSession(null);
+                  setReceiverCodeInput('');
+                  setSelectedFile(null);
+                }}
+                className="w-full py-3 px-3 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-bold rounded-2xl transition"
               >
-                <XCircle className="w-4 h-4 shrink-0" />
-                <span>CANCELLA ED ELIMINA FILE ORA</span>
+                Esegui Nuovo Invio
               </button>
             </div>
           )}

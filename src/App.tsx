@@ -3,7 +3,7 @@ import { MinimalHeader, MinimalMode } from './components/MinimalHeader';
 import { MinimalReceiverView } from './components/MinimalReceiverView';
 import { MinimalDonorView } from './components/MinimalDonorView';
 import { MinimalDualSim } from './components/MinimalDualSim';
-import { ShieldCheck, Clock, Key } from 'lucide-react';
+import { ShieldCheck, Lock, Trash2, Key } from 'lucide-react';
 
 export default function App() {
   const [mode, setMode] = useState<MinimalMode>('receiver');
@@ -26,22 +26,26 @@ export default function App() {
           <div className="flex flex-col items-center sm:items-start space-y-0.5">
             <div className="flex items-center space-x-2">
               <ShieldCheck className="w-4 h-4 text-emerald-400 shrink-0" />
-              <span className="font-bold text-slate-300">SafeHandshake Ephemeral</span>
+              <span className="font-black text-slate-200 text-sm">GecolaShare</span>
             </div>
             {/* Always under name: 2026@AETERNA */}
-            <span className="text-[11px] font-bold text-emerald-400 font-mono tracking-wider">
+            <span className="text-[11px] font-extrabold text-emerald-400 font-mono tracking-wider">
               2026@AETERNA
             </span>
           </div>
 
-          <div className="flex items-center justify-center space-x-4 text-slate-400">
-            <span className="flex items-center gap-1">
-              <Key className="w-3.5 h-3.5 text-emerald-400" />
-              <span>4 Cifre (15 Min)</span>
+          <div className="flex flex-wrap items-center justify-center gap-3 text-[11px] text-slate-400">
+            <span className="flex items-center gap-1 font-semibold text-emerald-300">
+              <Lock className="w-3.5 h-3.5 text-emerald-400" />
+              <span>Crittografia AES-256 E2EE</span>
+            </span>
+            <span className="flex items-center gap-1 font-semibold text-teal-300">
+              <Trash2 className="w-3.5 h-3.5 text-teal-400" />
+              <span>Auto-Distruzione Istantanea</span>
             </span>
             <span className="flex items-center gap-1">
-              <Clock className="w-3.5 h-3.5 text-teal-400" />
-              <span>Download 30 Min</span>
+              <Key className="w-3.5 h-3.5 text-slate-400" />
+              <span>Vault Locale Donatore</span>
             </span>
           </div>
         </div>

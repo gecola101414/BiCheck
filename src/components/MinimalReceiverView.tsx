@@ -1,7 +1,8 @@
 import React, { useState, useEffect } from 'react';
-import { Clock, Download, AlertCircle, RefreshCw, CheckCircle2, MessageSquare, ArrowRight } from 'lucide-react';
+import { Clock, Download, AlertCircle, RefreshCw, CheckCircle2, MessageSquare, ArrowRight, Lock, Trash2, ShieldCheck } from 'lucide-react';
 import { EphemeralSession } from '../types';
 import { requestReceiverCode, receiverUnlock, fetchSessionStatus, subscribeToSession } from '../services/apiService';
+import { decryptPayload } from '../lib/crypto';
 
 export const MinimalReceiverView: React.FC = () => {
   const [customMessage, setCustomMessage] = useState('Ciao! Mi mandi il tuo documento di identità per la registrazione Hotel?');
@@ -12,6 +13,7 @@ export const MinimalReceiverView: React.FC = () => {
   const [unlockedTimer, setUnlockedTimer] = useState<number>(1800);
   const [isLoading, setIsLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [isPurged, setIsPurged] = useState(false);
 
   const presets = [
     "Ciao! Mi mandi il documento per il check-in Hotel?",
@@ -21,7 +23,7 @@ export const MinimalReceiverView: React.FC = () => {
 
   // Real-time Firestore subscription & polling backup
   useEffect(() => {
-    if (!session || session.status === 'unlocked' || session.status === 'revoked' || session.status === 'expired') {
+    if (!session || session.status === 'unlocked' || session.status === 'revoked' || session.status === 'expired' || session.status === 'purged') {
       return;
     }
     const unsubscribe = subscribeToSession(session.id, (latestSession) => {
@@ -68,6 +70,7 @@ export const MinimalReceiverView: React.FC = () => {
   const handleCreateRequest = async () => {
     setIsLoading(true);
     setErrorMsg(null);
+    setIsPurged(false);
     try {
       const newSession = await requestReceiverCode(customMessage);
       setSession(newSession);
@@ -99,35 +102,35 @@ export const MinimalReceiverView: React.FC = () => {
     }
   };
 
-  // Fail-safe PDF & File Download trigger
+  // Fail-safe PDF & File Download trigger with E2EE Decryption and Instant Purge
   const handleDownloadFile = async () => {
     if (!session) return;
     setIsLoading(true);
     setErrorMsg(null);
 
     try {
-      // 1. If inline Base64 dataUrl is present
-      if (session.fileDataUrl && session.fileDataUrl.startsWith('data:')) {
-        const res = await fetch(session.fileDataUrl);
-        const blob = await res.blob();
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = session.fileName || 'documento.pdf';
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-        setTimeout(() => URL.revokeObjectURL(url), 1000);
-        return;
+      let rawDataUrl = session.fileDataUrl;
+
+      // If file url endpoint is present, fetch payload from server
+      if (!rawDataUrl) {
+        const downloadUrl = session.fileUrl || `/api/ephemeral/download/${session.id}`;
+        const res = await fetch(downloadUrl);
+        if (!res.ok) {
+          throw new Error('File non disponibile, già auto-distrutto o scaduto.');
+        }
+        rawDataUrl = await res.text();
       }
 
-      // 2. Fetch from server endpoint via blob to avoid browser iframe/CORS issues
-      const downloadUrl = session.fileUrl || `/api/ephemeral/download/${session.id}`;
-      const res = await fetch(downloadUrl);
-      if (!res.ok) {
-        throw new Error('File non trovato, revocato o scaduto dal server.');
-      }
-      const blob = await res.blob();
+      // Decrypt payload client-side with E2EE key (ReceiverCode + DonorCode)
+      const decryptedDataUrl = await decryptPayload(
+        rawDataUrl,
+        session.receiverCode,
+        session.donorCode || donorCodeInput
+      );
+
+      // Trigger client-side save
+      const fetchRes = await fetch(decryptedDataUrl);
+      const blob = await fetchRes.blob();
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
@@ -136,8 +139,12 @@ export const MinimalReceiverView: React.FC = () => {
       a.click();
       document.body.removeChild(a);
       setTimeout(() => URL.revokeObjectURL(url), 1000);
+
+      // Flag auto-purged status
+      setIsPurged(true);
+      setSession(prev => prev ? { ...prev, status: 'purged' } : null);
     } catch (err: any) {
-      setErrorMsg(err.message || 'Errore durante il download del file.');
+      setErrorMsg(err.message || 'Errore durante la decifratura o download del file.');
     } finally {
       setIsLoading(false);
     }
@@ -145,19 +152,29 @@ export const MinimalReceiverView: React.FC = () => {
 
   return (
     <div className="max-w-xl mx-auto space-y-4 font-sans px-1 sm:px-0">
-      {/* View Title with 2026@AETERNA branding */}
+      {/* View Title with GecolaShare & 2026@AETERNA branding */}
       <div className="text-center space-y-1">
         <span className="text-[10px] sm:text-[11px] font-bold text-emerald-400 uppercase tracking-wider bg-emerald-500/10 px-2.5 py-0.5 rounded-full border border-emerald-500/20 inline-block">
           Console Ricevente (Hotel / Ente)
         </span>
-        <h2 className="text-xl sm:text-2xl font-extrabold text-slate-100 tracking-tight">Richiedi Documento</h2>
-        <span className="text-xs font-bold text-emerald-400 font-mono block">2026@AETERNA</span>
+        <h2 className="text-xl sm:text-2xl font-black text-slate-100 tracking-tight flex items-center justify-center gap-2">
+          <span>Richiedi Documento</span>
+          <ShieldCheck className="w-5 h-5 text-emerald-400" />
+        </h2>
+        <span className="text-xs font-black text-emerald-400 font-mono block">2026@AETERNA</span>
         <p className="text-[11px] sm:text-xs text-slate-400">Genera il codice a 4 cifre e dettalo a voce al cliente.</p>
       </div>
 
       {/* STEP 1 FORM */}
-      {(!session || session.status === 'expired' || session.status === 'revoked') && (
+      {(!session || session.status === 'expired' || session.status === 'revoked' || session.status === 'purged' || isPurged) && (
         <div className="bg-slate-900 border border-slate-800 rounded-3xl p-4 sm:p-6 shadow-xl space-y-4">
+          {isPurged && (
+            <div className="p-3.5 rounded-2xl bg-emerald-950/60 border border-emerald-500/50 text-emerald-300 text-xs flex items-center space-x-2">
+              <Trash2 className="w-4 h-4 text-emerald-400 shrink-0" />
+              <span><strong>AUTO-DISTRUZIONE COMPLETATA:</strong> Il file è stato scaricato ed eliminato istantaneamente dal server. Zero tracce rimaste!</span>
+            </div>
+          )}
+
           <div>
             <label className="block text-xs font-semibold text-slate-200 mb-1 flex items-center gap-1.5">
               <MessageSquare className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
@@ -214,7 +231,7 @@ export const MinimalReceiverView: React.FC = () => {
       )}
 
       {/* STEP 2 & 3: DISPLAY RECEIVER CODE & ENTER DONOR CODE */}
-      {session && (session.status === 'pending_donor_upload' || session.status === 'pending_receiver_unlock') && (
+      {session && !isPurged && (session.status === 'pending_donor_upload' || session.status === 'pending_receiver_unlock') && (
         <div className="bg-slate-900 border border-emerald-500/40 rounded-3xl p-4 sm:p-6 shadow-2xl space-y-5 text-center">
           {/* Receiver Code Display */}
           <div className="space-y-2 border-b border-slate-800 pb-4">
@@ -236,7 +253,7 @@ export const MinimalReceiverView: React.FC = () => {
             <div className="p-3.5 rounded-2xl bg-slate-950 border border-slate-800 space-y-2">
               <div className="flex items-center justify-center space-x-2 text-xs font-semibold text-amber-400">
                 <RefreshCw className="w-4 h-4 animate-spin shrink-0" />
-                <span>In attesa che il cliente carichi il file col codice {session.receiverCode}...</span>
+                <span>In attesa che il cliente invii il file col codice {session.receiverCode}...</span>
               </div>
             </div>
           )}
@@ -246,7 +263,7 @@ export const MinimalReceiverView: React.FC = () => {
             <div className="space-y-4 text-left">
               <div className="p-3.5 rounded-2xl bg-emerald-950/50 border border-emerald-800 text-emerald-300 text-xs flex items-center space-x-2">
                 <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
-                <span>Il cliente ha caricato il file! Chiedigli il <strong>Codice Donatore (4 cifre)</strong>.</span>
+                <span>Il cliente ha caricato il file cifrato! Chiedigli il <strong>Codice Donatore (4 cifre)</strong>.</span>
               </div>
 
               <div>
@@ -290,35 +307,31 @@ export const MinimalReceiverView: React.FC = () => {
         </div>
       )}
 
-      {/* STEP 4 UNLOCKED FILE DOWNLOAD */}
-      {session && session.status === 'unlocked' && (
+      {/* STEP 4 UNLOCKED FILE DOWNLOAD & DECIPHER */}
+      {session && !isPurged && session.status === 'unlocked' && (
         <div className="bg-slate-900 border-2 border-emerald-500 rounded-3xl p-4 sm:p-6 shadow-2xl space-y-4 text-center">
           <div className="w-12 h-12 sm:w-14 sm:h-14 rounded-2xl bg-emerald-500/20 border border-emerald-500 text-emerald-400 flex items-center justify-center mx-auto shadow-lg shadow-emerald-500/20">
             <CheckCircle2 className="w-7 h-7 sm:w-8 sm:h-8" />
           </div>
 
           <div>
-            <span className="text-[10px] font-bold text-emerald-400 uppercase tracking-widest bg-emerald-500/20 px-2.5 py-0.5 rounded-full border border-emerald-500/30">
-              FILE PRONTO PER IL DOWNLOAD
+            <span className="text-[10px] font-bold text-emerald-400 uppercase tracking-widest bg-emerald-500/20 px-2.5 py-0.5 rounded-full border border-emerald-500/30 flex items-center justify-center gap-1 max-w-fit mx-auto">
+              <Lock className="w-3 h-3" />
+              <span>FILE E2EE PRONTO PER IL DOWNLOAD</span>
             </span>
-            <h3 className="text-lg sm:text-xl font-extrabold text-slate-100 mt-2 truncate">{session.fileName || 'documento.jpg'}</h3>
+            <h3 className="text-lg sm:text-xl font-extrabold text-slate-100 mt-2 truncate">{session.fileName || 'documento.pdf'}</h3>
             <p className="text-xs text-slate-400 mt-0.5">Dimensione: {session.fileSize || '1.2 MB'}</p>
           </div>
 
-          <div className="inline-flex items-center space-x-2 bg-slate-950 px-4 py-1.5 rounded-full border border-slate-800 text-xs text-slate-300">
-            <Clock className="w-3.5 h-3.5 text-emerald-400 animate-pulse shrink-0" />
-            <span>Link attivo per:</span>
-            <span className="font-mono font-bold text-emerald-400">
-              {Math.floor(unlockedTimer / 60)}:{(unlockedTimer % 60).toString().padStart(2, '0')}
-            </span>
-          </div>
-
-          {/* Preview image if available */}
-          {session.fileDataUrl && (
-            <div className="max-w-xs mx-auto rounded-2xl overflow-hidden border border-slate-800 bg-slate-950 p-2">
-              <img src={session.fileDataUrl} alt="Document Preview" className="w-full max-h-48 object-contain rounded-xl" />
+          <div className="p-3 bg-slate-950/80 rounded-2xl border border-slate-800 text-xs text-slate-300 space-y-1 text-left">
+            <div className="flex items-center gap-1.5 text-emerald-400 font-bold">
+              <Trash2 className="w-3.5 h-3.5" />
+              <span>Zero-Trace Auto-Destruzione:</span>
             </div>
-          )}
+            <p className="text-[11px] text-slate-400">
+              Al primo click sul pulsante di download, il file verrà decifrato e scaricato sul tuo computer. Contestualmente verrà <strong>eliminato ed auto-distrutto per sempre</strong> dal server.
+            </p>
+          </div>
 
           <div>
             <button
@@ -328,18 +341,16 @@ export const MinimalReceiverView: React.FC = () => {
               className="w-full sm:w-auto inline-flex items-center justify-center space-x-2 px-6 py-3.5 bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-400 hover:to-teal-400 text-slate-950 font-black text-xs rounded-2xl shadow-xl shadow-emerald-500/20 transition transform active:scale-95 text-center break-words disabled:opacity-50 cursor-pointer"
             >
               <Download className="w-4 h-4 shrink-0" />
-              <span>{isLoading ? 'PREPARAZIONE DOWNLOAD...' : 'SCARICA FILE ORA'}</span>
+              <span>{isLoading ? 'DECIFRATURA AES-256 E DOWNLOAD...' : 'DECIFRA E SCARICA ORA'}</span>
             </button>
           </div>
 
-          <div className="pt-2 border-t border-slate-800">
-            <button
-              onClick={() => setSession(null)}
-              className="w-full sm:w-auto px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl text-xs font-semibold"
-            >
-              Chiudi Sessione
-            </button>
-          </div>
+          {errorMsg && (
+            <div className="p-3 rounded-2xl bg-red-950/50 border border-red-800 text-red-300 text-xs flex items-center space-x-2 text-left">
+              <AlertCircle className="w-4 h-4 text-red-400 shrink-0" />
+              <span className="break-words">{errorMsg}</span>
+            </div>
+          )}
         </div>
       )}
 

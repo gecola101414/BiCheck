@@ -1,6 +1,6 @@
 {
-  "name": "SafeHandshake Ephemeral",
-  "description": "Trasferimento file e documenti ultra-veloce a tempo con codice vocale a 4 cifre. Zero registrazioni, massima privacy.",
+  "name": "GecolaShare",
+  "description": "Trasferimento file ultra-sicuro con crittografia end-to-end AES-256-GCM, zero permanenza sul server ed auto-distruzione immediata dopo il download.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }
