@@ -5,12 +5,21 @@ import { createServer as createViteServer } from "vite";
 
 const app = express();
 
-// Set 500 MB payload limit for large real files
+// Set 500 MB payload limit for large real files (PDFs, Images, Docs)
 app.use(express.json({ limit: "500mb" }));
 app.use(express.urlencoded({ limit: "500mb", extended: true }));
 
 const PORT = 3000;
 const STORE_FILE = path.join(process.cwd(), ".sessions_store.json");
+const BLOBS_DIR = path.join(process.cwd(), ".file_blobs");
+
+if (!fs.existsSync(BLOBS_DIR)) {
+  try {
+    fs.mkdirSync(BLOBS_DIR, { recursive: true });
+  } catch (e) {
+    // ignore
+  }
+}
 
 interface EphemeralSessionInternal {
   id: string;
@@ -33,8 +42,49 @@ interface EphemeralSessionInternal {
 }
 
 let activeSessions: Map<string, EphemeralSessionInternal> = new Map();
-// Dedicated file blobs store to avoid memory leaks
-const fileStore: Map<string, string> = new Map();
+const fileMemoryStore: Map<string, string> = new Map();
+
+// Save file data blob to disk & memory
+function saveFileBlob(sessionId: string, dataUrl: string) {
+  fileMemoryStore.set(sessionId, dataUrl);
+  try {
+    const filePath = path.join(BLOBS_DIR, `${sessionId}.dat`);
+    fs.writeFileSync(filePath, dataUrl, "utf-8");
+  } catch (err) {
+    console.error("Error writing file blob to disk:", err);
+  }
+}
+
+// Get file blob from memory or disk
+function getFileBlob(sessionId: string): string | null {
+  if (fileMemoryStore.has(sessionId)) {
+    return fileMemoryStore.get(sessionId) || null;
+  }
+  try {
+    const filePath = path.join(BLOBS_DIR, `${sessionId}.dat`);
+    if (fs.existsSync(filePath)) {
+      const data = fs.readFileSync(filePath, "utf-8");
+      fileMemoryStore.set(sessionId, data);
+      return data;
+    }
+  } catch (err) {
+    console.error("Error reading file blob from disk:", err);
+  }
+  return null;
+}
+
+// Delete file blob from memory and disk
+function deleteFileBlob(sessionId: string) {
+  fileMemoryStore.delete(sessionId);
+  try {
+    const filePath = path.join(BLOBS_DIR, `${sessionId}.dat`);
+    if (fs.existsSync(filePath)) {
+      fs.unlinkSync(filePath);
+    }
+  } catch (err) {
+    // ignore
+  }
+}
 
 // File persistence helpers
 function loadSessionsFromDisk() {
@@ -53,11 +103,10 @@ function loadSessionsFromDisk() {
 
 function saveSessionsToDisk() {
   try {
-    // Strip fileDataUrl before writing session list metadata to disk to keep store file lightweight
     const entries = Array.from(activeSessions.entries()).map(([id, session]) => {
       const clone = { ...session };
-      if (clone.fileDataUrl && clone.fileDataUrl.length > 500000) {
-        fileStore.set(id, clone.fileDataUrl);
+      if (clone.fileDataUrl && clone.fileDataUrl.length > 300000) {
+        saveFileBlob(id, clone.fileDataUrl);
         delete clone.fileDataUrl;
       }
       return [id, clone] as [string, EphemeralSessionInternal];
@@ -84,17 +133,17 @@ function cleanupSessions() {
     if (session.status === 'pending_donor_upload' && now > session.receiverCodeExpiresAt) {
       session.status = 'expired';
       delete session.fileDataUrl;
-      fileStore.delete(id);
+      deleteFileBlob(id);
       changed = true;
     } else if (session.status === 'pending_receiver_unlock' && session.donorCodeExpiresAt && now > session.donorCodeExpiresAt) {
       session.status = 'expired';
       delete session.fileDataUrl;
-      fileStore.delete(id);
+      deleteFileBlob(id);
       changed = true;
     } else if (session.status === 'unlocked' && session.unlockedExpiresAt && now > session.unlockedExpiresAt) {
       session.status = 'expired';
       delete session.fileDataUrl;
-      fileStore.delete(id);
+      deleteFileBlob(id);
       changed = true;
     }
   }
@@ -179,14 +228,14 @@ app.post("/api/ephemeral/donor-attach-file", (req, res) => {
   const now = Date.now();
   const donorCode = generate4DigitCode();
 
-  session.fileName = fileName || "documento.jpg";
+  session.fileName = fileName || "documento.pdf";
   session.fileSize = fileSize || "1.2 MB";
-  session.fileType = fileType || "image/jpeg";
+  session.fileType = fileType || "application/pdf";
   
   if (fileDataUrl) {
-    fileStore.set(sessionId, fileDataUrl);
+    saveFileBlob(sessionId, fileDataUrl);
     session.fileUrl = `/api/ephemeral/download/${sessionId}`;
-    if (fileDataUrl.length < 400000) {
+    if (fileDataUrl.length < 300000) {
       session.fileDataUrl = fileDataUrl;
     } else {
       delete session.fileDataUrl;
@@ -228,11 +277,6 @@ app.post("/api/ephemeral/receiver-unlock", (req, res) => {
   session.unlockedAt = now;
   session.unlockedExpiresAt = now + 30 * 60 * 1000; // 30 minutes download window
 
-  // If fileDataUrl was stored in fileStore, attach back or serve via fileUrl
-  if (!session.fileDataUrl && fileStore.has(sessionId)) {
-    session.fileDataUrl = fileStore.get(sessionId);
-  }
-
   saveSessionsToDisk();
   console.log(`[SERVER] File unlocked successfully for session ${sessionId}`);
   res.json({ success: true, session });
@@ -246,22 +290,31 @@ app.get("/api/ephemeral/download/:sessionId", (req, res) => {
     return res.status(404).send("File non disponibile, revocato o scaduto.");
   }
 
-  const fileData = session.fileDataUrl || fileStore.get(req.params.sessionId);
+  const fileData = session.fileDataUrl || getFileBlob(req.params.sessionId);
   if (!fileData) {
     return res.status(404).send("File non trovato.");
   }
 
-  if (fileData.startsWith("data:")) {
-    const matches = fileData.match(/^data:(.+);base64,(.+)$/);
-    if (matches) {
-      const mimeType = matches[1];
-      const buffer = Buffer.from(matches[2], 'base64');
-      res.setHeader('Content-Type', mimeType);
-      res.setHeader('Content-Disposition', `attachment; filename="${session.fileName || 'documento'}"`);
-      return res.send(buffer);
-    }
+  const commaIdx = fileData.indexOf(",");
+  if (commaIdx !== -1 && fileData.startsWith("data:")) {
+    const header = fileData.substring(0, commaIdx);
+    const base64Str = fileData.substring(commaIdx + 1);
+    
+    const mimeMatch = header.match(/^data:(.+);base64/);
+    const mimeType = mimeMatch ? mimeMatch[1] : (session.fileType || "application/pdf");
+    const buffer = Buffer.from(base64Str, "base64");
+
+    const rawFileName = session.fileName || "documento.pdf";
+    const safeFileName = encodeURIComponent(rawFileName).replace(/['()]/g, escape).replace(/\*/g, "%2A");
+
+    res.setHeader("Content-Type", mimeType);
+    res.setHeader("Content-Length", buffer.length.toString());
+    res.setHeader("Content-Disposition", `attachment; filename="${rawFileName.replace(/["\r\n]/g, "")}"; filename*=UTF-8''${safeFileName}`);
+    return res.send(buffer);
   }
 
+  // Plain text fallback
+  res.setHeader("Content-Type", session.fileType || "application/octet-stream");
   res.send(fileData);
 });
 
@@ -272,7 +325,7 @@ app.post("/api/ephemeral/donor-revoke", (req, res) => {
   if (session) {
     session.status = "revoked";
     delete session.fileDataUrl;
-    fileStore.delete(sessionId);
+    deleteFileBlob(sessionId);
     saveSessionsToDisk();
     console.log(`[SERVER] Session ${sessionId} REVOKED by donor`);
   }
@@ -286,10 +339,7 @@ app.get("/api/ephemeral/status/:sessionId", (req, res) => {
   if (!session) {
     return res.status(404).json({ error: "Sessione non trovata" });
   }
-  // Ensure fileUrl is present if fileDataUrl is omitted
-  if (!session.fileDataUrl && fileStore.has(session.id)) {
-    session.fileUrl = `/api/ephemeral/download/${session.id}`;
-  }
+  session.fileUrl = `/api/ephemeral/download/${session.id}`;
   res.json({ success: true, session });
 });
 

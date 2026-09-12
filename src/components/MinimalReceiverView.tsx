@@ -99,6 +99,50 @@ export const MinimalReceiverView: React.FC = () => {
     }
   };
 
+  // Fail-safe PDF & File Download trigger
+  const handleDownloadFile = async () => {
+    if (!session) return;
+    setIsLoading(true);
+    setErrorMsg(null);
+
+    try {
+      // 1. If inline Base64 dataUrl is present
+      if (session.fileDataUrl && session.fileDataUrl.startsWith('data:')) {
+        const res = await fetch(session.fileDataUrl);
+        const blob = await res.blob();
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = session.fileName || 'documento.pdf';
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+        return;
+      }
+
+      // 2. Fetch from server endpoint via blob to avoid browser iframe/CORS issues
+      const downloadUrl = session.fileUrl || `/api/ephemeral/download/${session.id}`;
+      const res = await fetch(downloadUrl);
+      if (!res.ok) {
+        throw new Error('File non trovato, revocato o scaduto dal server.');
+      }
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = session.fileName || 'documento.pdf';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch (err: any) {
+      setErrorMsg(err.message || 'Errore durante il download del file.');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
   return (
     <div className="max-w-xl mx-auto space-y-4 font-sans px-1 sm:px-0">
       {/* View Title with 2026@AETERNA branding */}
@@ -277,14 +321,15 @@ export const MinimalReceiverView: React.FC = () => {
           )}
 
           <div>
-            <a
-              href={session.fileUrl || session.fileDataUrl || '#'}
-              download={session.fileName || 'documento.jpg'}
-              className="w-full sm:w-auto inline-flex items-center justify-center space-x-2 px-6 py-3.5 bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-400 hover:to-teal-400 text-slate-950 font-black text-xs rounded-2xl shadow-xl shadow-emerald-500/20 transition transform active:scale-95 text-center break-words"
+            <button
+              type="button"
+              onClick={handleDownloadFile}
+              disabled={isLoading}
+              className="w-full sm:w-auto inline-flex items-center justify-center space-x-2 px-6 py-3.5 bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-400 hover:to-teal-400 text-slate-950 font-black text-xs rounded-2xl shadow-xl shadow-emerald-500/20 transition transform active:scale-95 text-center break-words disabled:opacity-50 cursor-pointer"
             >
               <Download className="w-4 h-4 shrink-0" />
-              <span>SCARICA FILE ORA</span>
-            </a>
+              <span>{isLoading ? 'PREPARAZIONE DOWNLOAD...' : 'SCARICA FILE ORA'}</span>
+            </button>
           </div>
 
           <div className="pt-2 border-t border-slate-800">
