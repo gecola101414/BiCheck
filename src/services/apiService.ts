@@ -2,7 +2,7 @@ import { EphemeralSession } from '../types';
 
 const STORAGE_KEY = 'safehandshake_ephemeral_sessions';
 
-function getLocalSessions(): EphemeralSession[] {
+export function getLocalSessions(): EphemeralSession[] {
   try {
     const data = localStorage.getItem(STORAGE_KEY);
     return data ? JSON.parse(data) : [];
@@ -11,21 +11,33 @@ function getLocalSessions(): EphemeralSession[] {
   }
 }
 
-function saveLocalSessions(sessions: EphemeralSession[]) {
+export function saveLocalSessions(sessions: EphemeralSession[]) {
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(sessions));
-    // Broadcast change across tabs
+    // Dispatch custom event to update components in real-time within same tab or across tabs
     window.dispatchEvent(new Event('storage'));
+    window.dispatchEvent(new Event('safehandshake_sync'));
   } catch {
     // ignore
   }
+}
+
+export function saveOrUpdateLocalSession(session: EphemeralSession) {
+  const sessions = getLocalSessions();
+  const index = sessions.findIndex(s => s.id === session.id);
+  if (index !== -1) {
+    sessions[index] = session;
+  } else {
+    sessions.push(session);
+  }
+  saveLocalSessions(sessions);
 }
 
 function generate4DigitCode(): string {
   return Math.floor(1000 + Math.random() * 9000).toString();
 }
 
-function cleanupLocalSessions() {
+export function cleanupLocalSessions() {
   const sessions = getLocalSessions();
   const now = Date.now();
   let changed = false;
@@ -52,76 +64,84 @@ function cleanupLocalSessions() {
 // ==================== HYBRID API SERVICE ====================
 
 export async function requestReceiverCode(message: string): Promise<EphemeralSession> {
-  // Try backend first
+  const cleanMessage = message?.trim() || "Ciao! Mi mandi il tuo documento di identità per favore?";
+
+  // 1. Try Backend Server API
   try {
     const res = await fetch('/api/ephemeral/request', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ message })
+      body: JSON.stringify({ message: cleanMessage })
     });
+
     const contentType = res.headers.get('content-type') || '';
     if (contentType.includes('application/json')) {
       const data = await res.json();
       if (res.ok && data.success && data.session) {
+        saveOrUpdateLocalSession(data.session);
         return data.session;
       }
     }
   } catch (err) {
-    console.warn('Backend API unavailable, switching to local memory fallback', err);
+    console.warn('Backend API request failed, falling back to local memory store', err);
   }
 
-  // Local fallback
+  // 2. Local Fallback
   cleanupLocalSessions();
   const now = Date.now();
   const session: EphemeralSession = {
     id: 'tx_' + Math.random().toString(36).substring(2, 9),
-    receiverMessage: message?.trim() || "Ciao! Mi mandi il tuo documento per favore?",
+    receiverMessage: cleanMessage,
     receiverCode: generate4DigitCode(),
     receiverCodeCreatedAt: now,
-    receiverCodeExpiresAt: now + 120 * 1000,
+    receiverCodeExpiresAt: now + 300 * 1000, // 5 minutes
     status: 'pending_donor_upload',
     createdAt: now
   };
 
-  const sessions = getLocalSessions();
-  sessions.push(session);
-  saveLocalSessions(sessions);
+  saveOrUpdateLocalSession(session);
   return session;
 }
 
 export async function donorLoadRequest(receiverCode: string): Promise<EphemeralSession> {
-  // Try backend first
+  const codeStr = receiverCode ? receiverCode.trim() : '';
+  if (!codeStr || codeStr.length !== 4) {
+    throw new Error('Inserisci un codice ricevente di 4 cifre valido.');
+  }
+
+  // 1. Try Backend Server API
   try {
     const res = await fetch('/api/ephemeral/donor-load-request', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ receiverCode })
+      body: JSON.stringify({ receiverCode: codeStr })
     });
+
     const contentType = res.headers.get('content-type') || '';
     if (contentType.includes('application/json')) {
       const data = await res.json();
       if (res.ok && data.success && data.session) {
+        saveOrUpdateLocalSession(data.session);
         return data.session;
-      } else if (data.error) {
-        throw new Error(data.error);
       }
     }
-  } catch (err: any) {
-    if (err.message && !err.message.includes('Unexpected token') && !err.message.includes('JSON')) {
-      throw err;
-    }
+  } catch (err) {
+    console.warn('Backend lookup failed, checking local store...', err);
   }
 
-  // Local fallback
+  // 2. Local Fallback Check
   cleanupLocalSessions();
   const sessions = getLocalSessions();
-  const session = sessions.find(s => s.receiverCode === receiverCode && s.status === 'pending_donor_upload');
+  const found = sessions.find(s => 
+    s.receiverCode === codeStr && 
+    (s.status === 'pending_donor_upload' || s.status === 'pending_receiver_unlock')
+  );
 
-  if (!session) {
-    throw new Error('Codice ricevente non trovato o scaduto (valido 2 minuti). Ricontrolla le 4 cifre.');
+  if (found) {
+    return found;
   }
 
-  return session;
+  throw new Error('Codice ricevente non trovato o scaduto. Ricontrolla le 4 cifre.');
 }
 
 export async function donorAttachFile(
@@ -131,34 +151,32 @@ export async function donorAttachFile(
   fileType: string,
   fileDataUrl: string
 ): Promise<{ session: EphemeralSession; donorCode: string }> {
-  // Try backend first
+  // 1. Try Backend Server API
   try {
     const res = await fetch('/api/ephemeral/donor-attach-file', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ sessionId, fileName, fileSize, fileType, fileDataUrl })
     });
+
     const contentType = res.headers.get('content-type') || '';
     if (contentType.includes('application/json')) {
       const data = await res.json();
       if (res.ok && data.success && data.session && data.donorCode) {
+        saveOrUpdateLocalSession(data.session);
         return { session: data.session, donorCode: data.donorCode };
-      } else if (data.error) {
-        throw new Error(data.error);
       }
     }
-  } catch (err: any) {
-    if (err.message && !err.message.includes('Unexpected token') && !err.message.includes('JSON')) {
-      throw err;
-    }
+  } catch (err) {
+    console.warn('Backend attach file failed, falling back to local memory', err);
   }
 
-  // Local fallback
+  // 2. Local Fallback
   cleanupLocalSessions();
   const sessions = getLocalSessions();
   const index = sessions.findIndex(s => s.id === sessionId);
 
-  if (index === -1 || sessions[index].status !== 'pending_donor_upload') {
+  if (index === -1) {
     throw new Error('Sessione non valida o scaduta.');
   }
 
@@ -170,7 +188,7 @@ export async function donorAttachFile(
   sessions[index].fileDataUrl = fileDataUrl;
   sessions[index].donorCode = donorCode;
   sessions[index].donorCodeCreatedAt = now;
-  sessions[index].donorCodeExpiresAt = now + 120 * 1000;
+  sessions[index].donorCodeExpiresAt = now + 300 * 1000; // 5 minutes
   sessions[index].status = 'pending_receiver_unlock';
 
   saveLocalSessions(sessions);
@@ -178,29 +196,29 @@ export async function donorAttachFile(
 }
 
 export async function receiverUnlock(sessionId: string, donorCode: string): Promise<EphemeralSession> {
-  // Try backend first
+  const codeStr = donorCode ? donorCode.trim() : '';
+
+  // 1. Try Backend Server API
   try {
     const res = await fetch('/api/ephemeral/receiver-unlock', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ sessionId, donorCode })
+      body: JSON.stringify({ sessionId, donorCode: codeStr })
     });
+
     const contentType = res.headers.get('content-type') || '';
     if (contentType.includes('application/json')) {
       const data = await res.json();
       if (res.ok && data.success && data.session) {
+        saveOrUpdateLocalSession(data.session);
         return data.session;
-      } else if (data.error) {
-        throw new Error(data.error);
       }
     }
-  } catch (err: any) {
-    if (err.message && !err.message.includes('Unexpected token') && !err.message.includes('JSON')) {
-      throw err;
-    }
+  } catch (err) {
+    console.warn('Backend unlock failed, falling back to local memory', err);
   }
 
-  // Local fallback
+  // 2. Local Fallback
   cleanupLocalSessions();
   const sessions = getLocalSessions();
   const index = sessions.findIndex(s => s.id === sessionId);
@@ -214,14 +232,14 @@ export async function receiverUnlock(sessionId: string, donorCode: string): Prom
     return s;
   }
 
-  if (s.status !== 'pending_receiver_unlock' || s.donorCode !== donorCode) {
+  if (s.status !== 'pending_receiver_unlock' || s.donorCode !== codeStr) {
     throw new Error('Codice donatore errato o scaduto.');
   }
 
   const now = Date.now();
   s.status = 'unlocked';
   s.unlockedAt = now;
-  s.unlockedExpiresAt = now + 600 * 1000;
+  s.unlockedExpiresAt = now + 600 * 1000; // 10 minutes
 
   saveLocalSessions(sessions);
   return s;
@@ -255,6 +273,7 @@ export async function fetchSessionStatus(sessionId: string): Promise<EphemeralSe
     if (contentType.includes('application/json')) {
       const data = await res.json();
       if (res.ok && data.success && data.session) {
+        saveOrUpdateLocalSession(data.session);
         return data.session;
       }
     }

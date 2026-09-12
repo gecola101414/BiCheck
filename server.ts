@@ -70,7 +70,7 @@ app.post("/api/ephemeral/request", (req, res) => {
     receiverMessage,
     receiverCode,
     receiverCodeCreatedAt: now,
-    receiverCodeExpiresAt: now + 120 * 1000, // 2 minutes
+    receiverCodeExpiresAt: now + 300 * 1000, // 5 minutes
     status: "pending_donor_upload",
     createdAt: now
   };
@@ -85,9 +85,14 @@ app.post("/api/ephemeral/donor-load-request", (req, res) => {
   const { receiverCode } = req.body;
   cleanupSessions();
 
+  const codeStr = receiverCode ? receiverCode.toString().trim() : "";
+
   let targetSession: EphemeralSessionInternal | null = null;
   for (const session of activeSessions.values()) {
-    if (session.receiverCode === receiverCode && session.status === "pending_donor_upload") {
+    if (
+      session.receiverCode === codeStr && 
+      (session.status === "pending_donor_upload" || session.status === "pending_receiver_unlock")
+    ) {
       targetSession = session;
       break;
     }
@@ -95,7 +100,7 @@ app.post("/api/ephemeral/donor-load-request", (req, res) => {
 
   if (!targetSession) {
     return res.status(404).json({ 
-      error: "Codice ricevente invalido o scaduto (valido 2 minuti). Ricontrolla le 4 cifre." 
+      error: "Codice ricevente invalido o scaduto. Ricontrolla le 4 cifre." 
     });
   }
 
@@ -108,7 +113,7 @@ app.post("/api/ephemeral/donor-attach-file", (req, res) => {
   cleanupSessions();
 
   const session = activeSessions.get(sessionId);
-  if (!session || session.status !== "pending_donor_upload") {
+  if (!session || (session.status !== "pending_donor_upload" && session.status !== "pending_receiver_unlock")) {
     return res.status(404).json({ error: "Sessione non valida o scaduta." });
   }
 
@@ -121,7 +126,7 @@ app.post("/api/ephemeral/donor-attach-file", (req, res) => {
   session.fileDataUrl = fileDataUrl;
   session.donorCode = donorCode;
   session.donorCodeCreatedAt = now;
-  session.donorCodeExpiresAt = now + 120 * 1000; // 2 mins
+  session.donorCodeExpiresAt = now + 300 * 1000; // 5 mins
   session.status = "pending_receiver_unlock";
 
   res.json({ success: true, session, donorCode });
@@ -141,7 +146,9 @@ app.post("/api/ephemeral/receiver-unlock", (req, res) => {
     return res.json({ success: true, session });
   }
 
-  if (session.status !== "pending_receiver_unlock" || session.donorCode !== donorCode) {
+  const codeStr = donorCode ? donorCode.toString().trim() : "";
+
+  if (session.status !== "pending_receiver_unlock" || session.donorCode !== codeStr) {
     return res.status(400).json({ error: "Codice donatore errato o scaduto." });
   }
 
