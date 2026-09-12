@@ -7,7 +7,7 @@ export const MinimalDonorView: React.FC = () => {
   const [receiverCodeInput, setReceiverCodeInput] = useState('');
   const [session, setSession] = useState<EphemeralSession | null>(null);
   const [donorCode, setDonorCode] = useState<string | null>(null);
-  const [donorTimer, setDonorTimer] = useState<number>(120);
+  const [donorTimer, setDonorTimer] = useState<number>(900);
 
   // File Upload state
   const [selectedFile, setSelectedFile] = useState<{
@@ -126,7 +126,7 @@ export const MinimalDonorView: React.FC = () => {
 
       setSession(result.session);
       setDonorCode(result.donorCode);
-      setDonorTimer(120);
+      setDonorTimer(900);
     } catch (err: any) {
       setErrorMsg(err.message || 'Errore durante l\'autorizzazione.');
     } finally {
