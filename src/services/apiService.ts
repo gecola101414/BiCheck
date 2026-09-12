@@ -180,7 +180,8 @@ export async function donorAttachFile(
   fileName: string,
   fileSize: string,
   fileType: string,
-  fileDataUrl: string
+  fileDataUrl: string,
+  receiverCode?: string
 ): Promise<{ session: EphemeralSession; donorCode: string }> {
   let updatedSession: EphemeralSession | null = null;
   let donorCode: string | null = null;
@@ -190,7 +191,7 @@ export async function donorAttachFile(
     const res = await fetch('/api/ephemeral/donor-attach-file', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ sessionId, fileName, fileSize, fileType, fileDataUrl })
+      body: JSON.stringify({ sessionId, fileName, fileSize, fileType, fileDataUrl, isEncrypted: true, receiverCode })
     });
     const contentType = res.headers.get('content-type') || '';
     if (contentType.includes('application/json')) {

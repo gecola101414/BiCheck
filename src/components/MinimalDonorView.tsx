@@ -227,7 +227,8 @@ export const MinimalDonorView: React.FC = () => {
         selectedFile.name,
         selectedFile.size,
         selectedFile.type,
-        encryptedPayload
+        encryptedPayload,
+        session.receiverCode
       );
 
       setSession(result.session);
