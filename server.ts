@@ -127,25 +127,46 @@ function generate4DigitCode(): string {
   return Math.floor(1000 + Math.random() * 9000).toString();
 }
 
-// Automatic cleanup of expired sessions
+// Automatic cleanup of expired sessions (Max 1 hour lifespan rule)
+const ONE_HOUR_MS = 60 * 60 * 1000; // 1 Hour (60 minutes)
+
 function cleanupSessions() {
   const now = Date.now();
   let changed = false;
 
   for (const [id, session] of activeSessions.entries()) {
-    if (session.status === 'pending_donor_upload' && now > session.receiverCodeExpiresAt) {
+    // Rule 1: Hard 1-Hour Auto-Destruction limit from session creation
+    const isExceededOneHour = (now - session.createdAt) > ONE_HOUR_MS;
+
+    if (session.status !== 'purged' && session.status !== 'expired' && isExceededOneHour) {
       session.status = 'expired';
       delete session.fileDataUrl;
+      delete session.fileUrl;
       purgeFileBlob(id);
       changed = true;
-    } else if (session.status === 'pending_receiver_unlock' && session.donorCodeExpiresAt && now > session.donorCodeExpiresAt) {
+      console.log(`[GECOLASHARE AUTO-CLEANUP] Session ${id} exceeded 1 hour limit without download. File auto-destroyed & purged permanently.`);
+    } 
+    // Rule 2: Receiver Code expired without upload
+    else if (session.status === 'pending_donor_upload' && now > session.receiverCodeExpiresAt) {
       session.status = 'expired';
       delete session.fileDataUrl;
+      delete session.fileUrl;
       purgeFileBlob(id);
       changed = true;
-    } else if (session.status === 'unlocked' && session.unlockedExpiresAt && now > session.unlockedExpiresAt) {
+    } 
+    // Rule 3: Donor Code expired without unlock
+    else if (session.status === 'pending_receiver_unlock' && session.donorCodeExpiresAt && now > session.donorCodeExpiresAt) {
+      session.status = 'expired';
+      delete session.fileDataUrl;
+      delete session.fileUrl;
+      purgeFileBlob(id);
+      changed = true;
+    } 
+    // Rule 4: Unlocked status expired without download confirmation
+    else if (session.status === 'unlocked' && session.unlockedExpiresAt && now > session.unlockedExpiresAt) {
       session.status = 'purged';
       delete session.fileDataUrl;
+      delete session.fileUrl;
       purgeFileBlob(id);
       changed = true;
     }
@@ -284,7 +305,7 @@ app.post("/api/ephemeral/receiver-unlock", (req, res) => {
   res.json({ success: true, session });
 });
 
-// Dedicated File Stream Endpoint with AUTO-PURGE ON DOWNLOAD
+// Dedicated File Stream Endpoint (Serves encrypted file payload for decryption)
 app.get("/api/ephemeral/download/:sessionId", (req, res) => {
   cleanupSessions();
   const session = activeSessions.get(req.params.sessionId);
@@ -297,38 +318,24 @@ app.get("/api/ephemeral/download/:sessionId", (req, res) => {
     return res.status(404).send("File non trovato sul server.");
   }
 
-  const commaIdx = fileData.indexOf(",");
-  let buffer: Buffer;
-  let mimeType = session.fileType || "application/octet-stream";
+  res.setHeader("Content-Type", "text/plain");
+  res.send(fileData);
+});
 
-  if (commaIdx !== -1 && fileData.startsWith("data:")) {
-    const header = fileData.substring(0, commaIdx);
-    const base64Str = fileData.substring(commaIdx + 1);
-    const mimeMatch = header.match(/^data:(.+);base64/);
-    if (mimeMatch) mimeType = mimeMatch[1];
-    buffer = Buffer.from(base64Str, "base64");
-  } else {
-    buffer = Buffer.from(fileData, "utf-8");
+// Explicit Post-Download Confirmation: Wipes file permanently AFTER client download completes
+app.post("/api/ephemeral/confirm-purge", (req, res) => {
+  const { sessionId } = req.body;
+  const session = activeSessions.get(sessionId);
+  if (session && session.status !== "purged") {
+    session.status = "purged";
+    session.purgedAt = Date.now();
+    delete session.fileDataUrl;
+    delete session.fileUrl;
+    purgeFileBlob(sessionId);
+    saveSessionsToDisk();
+    console.log(`[GECOLASHARE ZERO-TRACE] File ${sessionId} successfully downloaded by receiver & PERMANENTLY WIPED from server!`);
   }
-
-  const rawFileName = session.fileName || "documento.pdf";
-  const safeFileName = encodeURIComponent(rawFileName).replace(/['()]/g, escape).replace(/\*/g, "%2A");
-
-  res.setHeader("Content-Type", mimeType);
-  res.setHeader("Content-Length", buffer.length.toString());
-  res.setHeader("Content-Disposition", `attachment; filename="${rawFileName.replace(/["\r\n]/g, "")}"; filename*=UTF-8''${safeFileName}`);
-  
-  // Send file buffer to client
-  res.send(buffer);
-
-  // AUTO-PURGE / ZERO TRACE: Instantly wipe file blob from memory and disk after serving!
-  session.status = "purged";
-  session.purgedAt = Date.now();
-  delete session.fileDataUrl;
-  delete session.fileUrl;
-  purgeFileBlob(req.params.sessionId);
-  saveSessionsToDisk();
-  console.log(`[GECOLASHARE ZERO-TRACE] File for session ${req.params.sessionId} served and INSTANTLY WIPED from server memory & disk!`);
+  res.json({ success: true });
 });
 
 // Donor Kill Switch: Revoke connection immediately

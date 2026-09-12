@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Clock, Download, AlertCircle, RefreshCw, CheckCircle2, MessageSquare, ArrowRight, Lock, Trash2, ShieldCheck } from 'lucide-react';
 import { EphemeralSession } from '../types';
-import { requestReceiverCode, receiverUnlock, fetchSessionStatus, subscribeToSession } from '../services/apiService';
+import { requestReceiverCode, receiverUnlock, confirmPurge, fetchSessionStatus, subscribeToSession } from '../services/apiService';
 import { decryptPayload } from '../lib/crypto';
 
 export const MinimalReceiverView: React.FC = () => {
@@ -102,7 +102,7 @@ export const MinimalReceiverView: React.FC = () => {
     }
   };
 
-  // Fail-safe PDF & File Download trigger with E2EE Decryption and Instant Purge
+  // Fail-safe PDF & File Download trigger with E2EE Decryption and Instant Purge AFTER download
   const handleDownloadFile = async () => {
     if (!session) return;
     setIsLoading(true);
@@ -111,26 +111,44 @@ export const MinimalReceiverView: React.FC = () => {
     try {
       let rawDataUrl = session.fileDataUrl;
 
-      // If file url endpoint is present, fetch payload from server
+      // 1. Fetch encrypted payload text from server if not inline
       if (!rawDataUrl) {
         const downloadUrl = session.fileUrl || `/api/ephemeral/download/${session.id}`;
         const res = await fetch(downloadUrl);
         if (!res.ok) {
-          throw new Error('File non disponibile, già auto-distrutto o scaduto.');
+          throw new Error('File non disponibile, già auto-distrutto o scaduto dal server.');
         }
         rawDataUrl = await res.text();
       }
 
-      // Decrypt payload client-side with E2EE key (ReceiverCode + DonorCode)
+      // 2. Decrypt payload client-side with E2EE key (ReceiverCode + DonorCode)
       const decryptedDataUrl = await decryptPayload(
         rawDataUrl,
         session.receiverCode,
         session.donorCode || donorCodeInput
       );
 
-      // Trigger client-side save
-      const fetchRes = await fetch(decryptedDataUrl);
-      const blob = await fetchRes.blob();
+      // 3. Convert Data URL or text directly to Blob in browser memory
+      let blob: Blob;
+      if (decryptedDataUrl.startsWith('data:')) {
+        const commaIdx = decryptedDataUrl.indexOf(',');
+        const header = decryptedDataUrl.substring(0, commaIdx);
+        const base64Str = decryptedDataUrl.substring(commaIdx + 1);
+        const mimeMatch = header.match(/^data:(.+);base64/);
+        const mime = mimeMatch ? mimeMatch[1] : (session.fileType || 'application/pdf');
+
+        const binaryStr = atob(base64Str);
+        const len = binaryStr.length;
+        const bytes = new Uint8Array(len);
+        for (let i = 0; i < len; i++) {
+          bytes[i] = binaryStr.charCodeAt(i);
+        }
+        blob = new Blob([bytes], { type: mime });
+      } else {
+        blob = new Blob([decryptedDataUrl], { type: session.fileType || 'text/plain' });
+      }
+
+      // 4. Trigger client-side browser download
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
@@ -138,12 +156,14 @@ export const MinimalReceiverView: React.FC = () => {
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
-      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      setTimeout(() => URL.revokeObjectURL(url), 3000);
 
-      // Flag auto-purged status
+      // 5. NOW call confirmPurge on server and Firestore AFTER successful download!
+      await confirmPurge(session.id);
       setIsPurged(true);
       setSession(prev => prev ? { ...prev, status: 'purged' } : null);
     } catch (err: any) {
+      console.error('[Download Error]', err);
       setErrorMsg(err.message || 'Errore durante la decifratura o download del file.');
     } finally {
       setIsLoading(false);

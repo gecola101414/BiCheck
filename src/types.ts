@@ -1,25 +1,28 @@
 export type SessionState = 
-  | 'pending_donor_upload'   // Step 1: Receiver generated Receiver Code (4 digits, 2 mins) with custom message
-  | 'pending_receiver_unlock' // Step 2-3: Donor saw message, attached file, generated Donor Code (4 digits, 2 mins)
-  | 'unlocked'                // Step 4: Receiver entered Donor Code, file available to download (10 mins)
+  | 'pending_donor_upload'   // Step 1: Receiver generated Receiver Code (4 digits) with custom message
+  | 'pending_receiver_unlock' // Step 2-3: Donor saw message, attached file, generated Donor Code (4 digits)
+  | 'unlocked'                // Step 4: Receiver entered Donor Code, file available to download
+  | 'purged'                  // File downloaded & auto-destroyed from server
   | 'revoked'                 // Donor pressed Kill Switch
-  | 'expired';                // 2-min or 10-min timer ran out
+  | 'expired';                // Timer ran out
 
 export interface EphemeralSession {
   id: string;
   receiverMessage: string;
-  receiverCode: string;             // 4 digits (2 mins)
+  receiverCode: string;             // 4 digits
   receiverCodeCreatedAt: number;
   receiverCodeExpiresAt: number;
-  donorCode?: string;               // 4 digits (2 mins)
+  donorCode?: string;               // 4 digits
   donorCodeCreatedAt?: number;
   donorCodeExpiresAt?: number;
   fileName?: string;
   fileSize?: string;
   fileType?: string;
-  fileDataUrl?: string;             // Base64 or mock blob in memory
+  fileDataUrl?: string;             // Base64 encrypted payload
+  fileUrl?: string;                 // Download endpoint URL
   status: SessionState;
   unlockedAt?: number;
-  unlockedExpiresAt?: number;       // 10 mins
+  unlockedExpiresAt?: number;
+  purgedAt?: number;
   createdAt: number;
 }

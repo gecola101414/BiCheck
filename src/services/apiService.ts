@@ -334,6 +334,42 @@ export async function receiverUnlock(sessionId: string, donorCode: string): Prom
   throw new Error('Impossibile sbloccare la sessione.');
 }
 
+export async function confirmPurge(sessionId: string): Promise<void> {
+  // 1. Express Server
+  try {
+    await fetch('/api/ephemeral/confirm-purge', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sessionId })
+    });
+  } catch (e) {
+    // ignore
+  }
+
+  // 2. Firestore Cloud DB update
+  try {
+    const sessionRef = doc(db, 'sessions', sessionId);
+    await updateDoc(sessionRef, {
+      status: 'purged',
+      purgedAt: Date.now(),
+      fileDataUrl: '',
+      fileUrl: ''
+    });
+  } catch (err) {
+    console.warn('[API] Firestore purge update warning:', err);
+  }
+
+  // 3. LocalStorage update
+  const sessions = getLocalSessions();
+  const index = sessions.findIndex(s => s.id === sessionId);
+  if (index !== -1) {
+    sessions[index].status = 'purged';
+    delete sessions[index].fileDataUrl;
+    delete sessions[index].fileUrl;
+    saveLocalSessions(sessions);
+  }
+}
+
 export async function donorRevoke(sessionId: string): Promise<void> {
   // 1. Express Server
   try {
