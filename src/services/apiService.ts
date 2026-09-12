@@ -1,4 +1,16 @@
 import { EphemeralSession } from '../types';
+import { db } from '../lib/firebase';
+import { 
+  collection, 
+  doc, 
+  getDoc, 
+  setDoc, 
+  updateDoc, 
+  query, 
+  where, 
+  getDocs, 
+  onSnapshot 
+} from 'firebase/firestore';
 
 const STORAGE_KEY = 'safehandshake_ephemeral_sessions';
 
@@ -36,70 +48,36 @@ function generate4DigitCode(): string {
   return Math.floor(1000 + Math.random() * 9000).toString();
 }
 
-export function cleanupLocalSessions() {
-  const sessions = getLocalSessions();
-  const now = Date.now();
-  let changed = false;
-
-  for (const session of sessions) {
-    if (session.status === 'pending_donor_upload' && now > session.receiverCodeExpiresAt) {
-      session.status = 'expired';
-      delete session.fileDataUrl;
-      changed = true;
-    } else if (session.status === 'pending_receiver_unlock' && session.donorCodeExpiresAt && now > session.donorCodeExpiresAt) {
-      session.status = 'expired';
-      delete session.fileDataUrl;
-      changed = true;
-    } else if (session.status === 'unlocked' && session.unlockedExpiresAt && now > session.unlockedExpiresAt) {
-      session.status = 'expired';
-      delete session.fileDataUrl;
-      changed = true;
-    }
-  }
-
-  if (changed) saveLocalSessions(sessions);
-}
-
-// ==================== HYBRID API SERVICE ====================
+// ==================== REAL-TIME FIRESTORE API SERVICE ====================
 
 export async function requestReceiverCode(message: string): Promise<EphemeralSession> {
   const cleanMessage = message?.trim() || "Ciao! Mi mandi il tuo documento di identità per favore?";
-
-  // 1. Backend Server API
-  try {
-    const res = await fetch('/api/ephemeral/request', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ message: cleanMessage })
-    });
-
-    const contentType = res.headers.get('content-type') || '';
-    if (contentType.includes('application/json')) {
-      const data = await res.json();
-      if (res.ok && data.success && data.session) {
-        saveOrUpdateLocalSession(data.session);
-        return data.session;
-      }
-    }
-  } catch (err) {
-    console.warn('Backend API request failed:', err);
-  }
-
-  // 2. Local Fallback (for single-tab / offline mode)
-  cleanupLocalSessions();
   const now = Date.now();
-  const session: EphemeralSession = {
-    id: 'tx_' + Math.random().toString(36).substring(2, 9),
+  const receiverCode = generate4DigitCode();
+  const sessionId = "tx_" + Math.random().toString(36).substring(2, 9);
+
+  const sessionData: EphemeralSession = {
+    id: sessionId,
     receiverMessage: cleanMessage,
-    receiverCode: generate4DigitCode(),
+    receiverCode,
     receiverCodeCreatedAt: now,
     receiverCodeExpiresAt: now + 15 * 60 * 1000, // 15 minutes
     status: 'pending_donor_upload',
     createdAt: now
   };
 
-  saveOrUpdateLocalSession(session);
-  return session;
+  // 1. Write to Firestore Cloud DB
+  try {
+    const sessionRef = doc(db, 'sessions', sessionId);
+    await setDoc(sessionRef, sessionData);
+  } catch (err) {
+    console.warn('Firestore setDoc warning, relying on hybrid fallback:', err);
+  }
+
+  // 2. Cache in LocalStorage
+  saveOrUpdateLocalSession(sessionData);
+
+  return sessionData;
 }
 
 export async function donorLoadRequest(receiverCode: string): Promise<EphemeralSession> {
@@ -108,44 +86,47 @@ export async function donorLoadRequest(receiverCode: string): Promise<EphemeralS
     throw new Error('Inserisci un codice ricevente di 4 cifre valido.');
   }
 
-  let serverError: string | null = null;
+  const now = Date.now();
 
-  // 1. Try Backend Server API
+  // 1. Query Firestore Cloud DB for matching code
   try {
-    const res = await fetch('/api/ephemeral/donor-load-request', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ receiverCode: codeStr })
+    const sessionsRef = collection(db, 'sessions');
+    const q = query(sessionsRef, where('receiverCode', '==', codeStr));
+    const querySnapshot = await getDocs(q);
+
+    const matches: EphemeralSession[] = [];
+    querySnapshot.forEach((d) => {
+      const data = d.data() as EphemeralSession;
+      if (data.status !== 'revoked' && data.status !== 'expired' && now <= data.receiverCodeExpiresAt) {
+        matches.push(data);
+      }
     });
 
-    const contentType = res.headers.get('content-type') || '';
-    if (contentType.includes('application/json')) {
-      const data = await res.json();
-      if (res.ok && data.success && data.session) {
-        saveOrUpdateLocalSession(data.session);
-        return data.session;
-      } else if (data.error) {
-        serverError = data.error;
-      }
+    if (matches.length > 0) {
+      // Sort newest first
+      matches.sort((a, b) => b.createdAt - a.createdAt);
+      const target = matches[0];
+      saveOrUpdateLocalSession(target);
+      return target;
     }
   } catch (err) {
-    console.warn('Backend lookup error:', err);
+    console.warn('Firestore query error:', err);
   }
 
   // 2. Local Fallback Check
-  cleanupLocalSessions();
-  const sessions = getLocalSessions();
-  const found = sessions.find(s => 
+  const localSessions = getLocalSessions();
+  const found = localSessions.find(s => 
     s.receiverCode === codeStr && 
     s.status !== 'revoked' && 
-    s.status !== 'expired'
+    s.status !== 'expired' &&
+    now <= s.receiverCodeExpiresAt
   );
 
   if (found) {
     return found;
   }
 
-  throw new Error(serverError || 'Codice ricevente non trovato o scaduto. Ricontrolla le 4 cifre.');
+  throw new Error('Codice ricevente non trovato o scaduto. Ricontrolla le 4 cifre.');
 }
 
 export async function donorAttachFile(
@@ -155,83 +136,94 @@ export async function donorAttachFile(
   fileType: string,
   fileDataUrl: string
 ): Promise<{ session: EphemeralSession; donorCode: string }> {
-  // 1. Try Backend Server API
-  try {
-    const res = await fetch('/api/ephemeral/donor-attach-file', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ sessionId, fileName, fileSize, fileType, fileDataUrl })
-    });
+  const now = Date.now();
+  const donorCode = generate4DigitCode();
 
-    const contentType = res.headers.get('content-type') || '';
-    if (contentType.includes('application/json')) {
-      const data = await res.json();
-      if (res.ok && data.success && data.session && data.donorCode) {
-        saveOrUpdateLocalSession(data.session);
-        return { session: data.session, donorCode: data.donorCode };
-      } else if (data.error) {
-        throw new Error(data.error);
-      }
+  const updateFields = {
+    fileName: fileName || 'documento.jpg',
+    fileSize: fileSize || '1.2 MB',
+    fileType: fileType || 'image/jpeg',
+    fileDataUrl,
+    donorCode,
+    donorCodeCreatedAt: now,
+    donorCodeExpiresAt: now + 15 * 60 * 1000, // 15 minutes
+    status: 'pending_receiver_unlock' as const
+  };
+
+  // 1. Update Firestore Cloud DB
+  try {
+    const sessionRef = doc(db, 'sessions', sessionId);
+    await updateDoc(sessionRef, updateFields);
+
+    const updatedSnap = await getDoc(sessionRef);
+    if (updatedSnap.exists()) {
+      const fullSession = updatedSnap.data() as EphemeralSession;
+      saveOrUpdateLocalSession(fullSession);
+      return { session: fullSession, donorCode };
     }
-  } catch (err: any) {
-    if (err.message && !err.message.includes('Unexpected token')) {
-      throw err;
-    }
+  } catch (err) {
+    console.warn('Firestore updateDoc error:', err);
   }
 
   // 2. Local Fallback
-  cleanupLocalSessions();
   const sessions = getLocalSessions();
   const index = sessions.findIndex(s => s.id === sessionId);
-
   if (index === -1) {
     throw new Error('Sessione non valida o scaduta.');
   }
 
-  const now = Date.now();
-  const donorCode = generate4DigitCode();
-  sessions[index].fileName = fileName || 'documento.jpg';
-  sessions[index].fileSize = fileSize || '1.2 MB';
-  sessions[index].fileType = fileType || 'image/jpeg';
-  sessions[index].fileDataUrl = fileDataUrl;
-  sessions[index].donorCode = donorCode;
-  sessions[index].donorCodeCreatedAt = now;
-  sessions[index].donorCodeExpiresAt = now + 15 * 60 * 1000; // 15 minutes
-  sessions[index].status = 'pending_receiver_unlock';
+  const updatedSession: EphemeralSession = {
+    ...sessions[index],
+    ...updateFields
+  };
 
-  saveLocalSessions(sessions);
-  return { session: sessions[index], donorCode };
+  saveOrUpdateLocalSession(updatedSession);
+  return { session: updatedSession, donorCode };
 }
 
 export async function receiverUnlock(sessionId: string, donorCode: string): Promise<EphemeralSession> {
   const codeStr = donorCode ? donorCode.toString().replace(/\D/g, '') : '';
+  const now = Date.now();
 
-  // 1. Try Backend Server API
+  // 1. Try Firestore Cloud DB
   try {
-    const res = await fetch('/api/ephemeral/receiver-unlock', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ sessionId, donorCode: codeStr })
-    });
+    const sessionRef = doc(db, 'sessions', sessionId);
+    const snap = await getDoc(sessionRef);
 
-    const contentType = res.headers.get('content-type') || '';
-    if (contentType.includes('application/json')) {
-      const data = await res.json();
-      if (res.ok && data.success && data.session) {
-        saveOrUpdateLocalSession(data.session);
-        return data.session;
-      } else if (data.error) {
-        throw new Error(data.error);
+    if (snap.exists()) {
+      const currentData = snap.data() as EphemeralSession;
+      if (currentData.status === 'unlocked') {
+        return currentData;
       }
+
+      if (currentData.status !== 'pending_receiver_unlock' || currentData.donorCode !== codeStr) {
+        throw new Error('Codice donatore errato o scaduto.');
+      }
+
+      const updateFields = {
+        status: 'unlocked' as const,
+        unlockedAt: now,
+        unlockedExpiresAt: now + 30 * 60 * 1000 // 30 minutes
+      };
+
+      await updateDoc(sessionRef, updateFields);
+
+      const unlockedSession: EphemeralSession = {
+        ...currentData,
+        ...updateFields
+      };
+
+      saveOrUpdateLocalSession(unlockedSession);
+      return unlockedSession;
     }
   } catch (err: any) {
-    if (err.message && !err.message.includes('Unexpected token')) {
+    if (err.message && err.message.includes('Codice donatore errato')) {
       throw err;
     }
+    console.warn('Firestore unlock error:', err);
   }
 
   // 2. Local Fallback
-  cleanupLocalSessions();
   const sessions = getLocalSessions();
   const index = sessions.findIndex(s => s.id === sessionId);
 
@@ -248,27 +240,27 @@ export async function receiverUnlock(sessionId: string, donorCode: string): Prom
     throw new Error('Codice donatore errato o scaduto.');
   }
 
-  const now = Date.now();
   s.status = 'unlocked';
   s.unlockedAt = now;
-  s.unlockedExpiresAt = now + 30 * 60 * 1000; // 30 minutes
+  s.unlockedExpiresAt = now + 30 * 60 * 1000;
 
   saveLocalSessions(sessions);
   return s;
 }
 
 export async function donorRevoke(sessionId: string): Promise<void> {
+  // 1. Update Firestore
   try {
-    await fetch('/api/ephemeral/donor-revoke', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ sessionId })
+    const sessionRef = doc(db, 'sessions', sessionId);
+    await updateDoc(sessionRef, {
+      status: 'revoked',
+      fileDataUrl: ''
     });
-  } catch (e) {
-    // ignore
+  } catch (err) {
+    console.warn('Firestore revoke error:', err);
   }
 
-  // Always update local fallback
+  // 2. Local fallback
   const sessions = getLocalSessions();
   const index = sessions.findIndex(s => s.id === sessionId);
   if (index !== -1) {
@@ -279,22 +271,39 @@ export async function donorRevoke(sessionId: string): Promise<void> {
 }
 
 export async function fetchSessionStatus(sessionId: string): Promise<EphemeralSession | null> {
+  // 1. Fetch from Firestore
   try {
-    const res = await fetch(`/api/ephemeral/status/${sessionId}`);
-    const contentType = res.headers.get('content-type') || '';
-    if (contentType.includes('application/json')) {
-      const data = await res.json();
-      if (res.ok && data.success && data.session) {
-        saveOrUpdateLocalSession(data.session);
-        return data.session;
-      }
+    const sessionRef = doc(db, 'sessions', sessionId);
+    const snap = await getDoc(sessionRef);
+    if (snap.exists()) {
+      const data = snap.data() as EphemeralSession;
+      saveOrUpdateLocalSession(data);
+      return data;
     }
-  } catch (e) {
+  } catch (err) {
     // ignore
   }
 
-  // Fallback to local
-  cleanupLocalSessions();
+  // 2. Fallback local
   const sessions = getLocalSessions();
   return sessions.find(s => s.id === sessionId) || null;
+}
+
+/**
+ * Real-time listener for instant updates across devices
+ */
+export function subscribeToSession(sessionId: string, callback: (session: EphemeralSession) => void) {
+  try {
+    const sessionRef = doc(db, 'sessions', sessionId);
+    return onSnapshot(sessionRef, (snap) => {
+      if (snap.exists()) {
+        const data = snap.data() as EphemeralSession;
+        saveOrUpdateLocalSession(data);
+        callback(data);
+      }
+    });
+  } catch (err) {
+    console.warn('Snapshot listener subscription error:', err);
+    return () => {};
+  }
 }

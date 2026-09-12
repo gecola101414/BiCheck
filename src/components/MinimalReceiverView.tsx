@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Monitor, Clock, Download, AlertCircle, RefreshCw, Send, FileText, CheckCircle2, MessageSquare, ArrowRight } from 'lucide-react';
 import { EphemeralSession } from '../types';
-import { requestReceiverCode, receiverUnlock, fetchSessionStatus } from '../services/apiService';
+import { requestReceiverCode, receiverUnlock, fetchSessionStatus, subscribeToSession } from '../services/apiService';
 
 export const MinimalReceiverView: React.FC = () => {
   const [customMessage, setCustomMessage] = useState('Ciao! Mi mandi il tuo documento di identità per la registrazione Hotel?');
@@ -19,25 +19,33 @@ export const MinimalReceiverView: React.FC = () => {
     "Buongiorno, ho bisogno del codice fiscale per la ricevuta."
   ];
 
-  // Poll status while waiting for donor
+  // Real-time Firestore subscription & polling backup
   useEffect(() => {
-    let interval: any = null;
-    if (session && (session.status === 'pending_donor_upload' || session.status === 'pending_receiver_unlock')) {
-      interval = setInterval(async () => {
-        try {
-          const latestSession = await fetchSessionStatus(session.id);
-          if (latestSession) {
-            setSession(latestSession);
-          }
-        } catch (e) {
-          // ignore
-        }
-      }, 1500);
+    if (!session || session.status === 'unlocked' || session.status === 'revoked' || session.status === 'expired') {
+      return;
     }
+    const unsubscribe = subscribeToSession(session.id, (latestSession) => {
+      if (latestSession) {
+        setSession(latestSession);
+      }
+    });
+
+    const interval = setInterval(async () => {
+      try {
+        const latestSession = await fetchSessionStatus(session.id);
+        if (latestSession) {
+          setSession(latestSession);
+        }
+      } catch (e) {
+        // ignore
+      }
+    }, 2000);
+
     return () => {
-      if (interval) clearInterval(interval);
+      unsubscribe();
+      clearInterval(interval);
     };
-  }, [session]);
+  }, [session?.id]);
 
   // Timer Countdown
   useEffect(() => {

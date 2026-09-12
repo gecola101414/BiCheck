@@ -1,0 +1,28 @@
+{
+  "entities": {
+    "sessions": {
+      "title": "Ephemeral Session",
+      "description": "Short-lived document exchange session using 4-digit codes",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "receiverMessage": { "type": "string" },
+        "receiverCode": { "type": "string" },
+        "receiverCodeCreatedAt": { "type": "number" },
+        "receiverCodeExpiresAt": { "type": "number" },
+        "donorCode": { "type": "string" },
+        "donorCodeCreatedAt": { "type": "number" },
+        "donorCodeExpiresAt": { "type": "number" },
+        "fileName": { "type": "string" },
+        "fileSize": { "type": "string" },
+        "fileType": { "type": "string" },
+        "fileDataUrl": { "type": "string" },
+        "status": { "type": "string" },
+        "unlockedAt": { "type": "number" },
+        "unlockedExpiresAt": { "type": "number" },
+        "createdAt": { "type": "number" }
+      },
+      "required": ["id", "receiverCode", "status", "createdAt"]
+    }
+  }
+}

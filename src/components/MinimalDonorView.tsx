@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Smartphone, Upload, ShieldCheck, CheckCircle2, Clock, AlertCircle, XCircle, ArrowRight, Copy, Check, FileText } from 'lucide-react';
 import { EphemeralSession } from '../types';
-import { donorLoadRequest, donorAttachFile, donorRevoke, fetchSessionStatus } from '../services/apiService';
+import { donorLoadRequest, donorAttachFile, donorRevoke, fetchSessionStatus, subscribeToSession } from '../services/apiService';
 
 export const MinimalDonorView: React.FC = () => {
   const [receiverCodeInput, setReceiverCodeInput] = useState('');
@@ -21,25 +21,33 @@ export const MinimalDonorView: React.FC = () => {
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
 
-  // Poll status while active
+  // Real-time Firestore subscription & polling backup
   useEffect(() => {
-    let interval: any = null;
-    if (session && session.status === 'pending_receiver_unlock') {
-      interval = setInterval(async () => {
-        try {
-          const latest = await fetchSessionStatus(session.id);
-          if (latest) {
-            setSession(latest);
-          }
-        } catch (e) {
-          // ignore
-        }
-      }, 1500);
+    if (!session || session.status === 'revoked' || session.status === 'expired') {
+      return;
     }
+    const unsubscribe = subscribeToSession(session.id, (latest) => {
+      if (latest) {
+        setSession(latest);
+      }
+    });
+
+    const interval = setInterval(async () => {
+      try {
+        const latest = await fetchSessionStatus(session.id);
+        if (latest) {
+          setSession(latest);
+        }
+      } catch (e) {
+        // ignore
+      }
+    }, 2000);
+
     return () => {
-      if (interval) clearInterval(interval);
+      unsubscribe();
+      clearInterval(interval);
     };
-  }, [session]);
+  }, [session?.id]);
 
   // Donor Code Timer
   useEffect(() => {
