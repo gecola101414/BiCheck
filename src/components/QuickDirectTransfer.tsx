@@ -15,7 +15,7 @@ import {
   Sparkles,
   RefreshCw
 } from 'lucide-react';
-import { directUploadFile, directLookupCode, confirmPurge, donorRevoke } from '../services/apiService';
+import { directUploadFile, directLookupCode, confirmPurge, donorRevoke, dataUrlToBlob, getFileFromFirestore } from '../services/apiService';
 import { EphemeralSession } from '../types';
 
 export const QuickDirectTransfer: React.FC = () => {
@@ -199,22 +199,39 @@ export const QuickDirectTransfer: React.FC = () => {
     setReceiveError(null);
 
     try {
-      const downloadUrl = foundSession.fileUrl || `/api/ephemeral/download/${foundSession.id}`;
-      const response = await fetch(downloadUrl);
-
-      if (!response.ok) {
-        throw new Error('Impossibile scaricare il file. Potrebbe essere già stato rimosso.');
+      let dataUrl = foundSession.fileDataUrl;
+      if (!dataUrl) {
+        dataUrl = await getFileFromFirestore(foundSession.id);
       }
 
-      const blob = await response.blob();
-      const url = window.URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = foundSession.fileName || 'documento';
-      document.body.appendChild(a);
-      a.click();
-      window.URL.revokeObjectURL(url);
-      document.body.removeChild(a);
+      if (dataUrl) {
+        const blob = dataUrlToBlob(dataUrl);
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = foundSession.fileName || 'documento';
+        document.body.appendChild(a);
+        a.click();
+        window.URL.revokeObjectURL(url);
+        document.body.removeChild(a);
+      } else {
+        const downloadUrl = foundSession.fileUrl || `/api/ephemeral/download/${foundSession.id}`;
+        const response = await fetch(downloadUrl);
+
+        if (!response.ok) {
+          throw new Error('Impossibile scaricare il file. Potrebbe essere già stato rimosso.');
+        }
+
+        const blob = await response.blob();
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = foundSession.fileName || 'documento';
+        document.body.appendChild(a);
+        a.click();
+        window.URL.revokeObjectURL(url);
+        document.body.removeChild(a);
+      }
 
       // Confirm Purge to wipe from server
       await confirmPurge(foundSession.id);

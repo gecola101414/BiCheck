@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Clock, Download, AlertCircle, RefreshCw, CheckCircle2, MessageSquare, ArrowRight, Lock, Trash2, ShieldCheck } from 'lucide-react';
 import { EphemeralSession } from '../types';
-import { requestReceiverCode, receiverUnlock, confirmPurge, fetchSessionStatus, subscribeToSession } from '../services/apiService';
+import { requestReceiverCode, receiverUnlock, confirmPurge, fetchSessionStatus, subscribeToSession, getFileFromFirestore } from '../services/apiService';
 import { decryptPayload } from '../lib/crypto';
 
 export const MinimalReceiverView: React.FC = () => {
@@ -111,7 +111,12 @@ export const MinimalReceiverView: React.FC = () => {
     try {
       let rawDataUrl = session.fileDataUrl;
 
-      // 1. Fetch encrypted payload text from server if not inline
+      // 1. Fetch from Firestore chunks if inline payload is empty
+      if (!rawDataUrl) {
+        rawDataUrl = (await getFileFromFirestore(session.id)) || '';
+      }
+
+      // 2. Fallback fetch from Express download endpoint
       if (!rawDataUrl) {
         const downloadUrl = session.fileUrl || `/api/ephemeral/download/${session.id}`;
         const res = await fetch(downloadUrl);

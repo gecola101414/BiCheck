@@ -6,6 +6,7 @@ import {
   getDoc, 
   setDoc, 
   updateDoc, 
+  deleteDoc,
   query, 
   where, 
   getDocs, 
@@ -20,6 +21,128 @@ export function getLocalSessions(): EphemeralSession[] {
     return data ? JSON.parse(data) : [];
   } catch {
     return [];
+  }
+}
+
+export function dataUrlToBlob(dataUrl: string): Blob {
+  try {
+    const parts = dataUrl.split(',');
+    const mimeMatch = parts[0].match(/:(.*?);/);
+    const mime = mimeMatch ? mimeMatch[1] : 'application/octet-stream';
+    const bstr = atob(parts[1]);
+    let n = bstr.length;
+    const u8arr = new Uint8Array(n);
+    while (n--) {
+      u8arr[n] = bstr.charCodeAt(n);
+    }
+    return new Blob([u8arr], { type: mime });
+  } catch (e) {
+    console.error('Error converting Data URL to Blob:', e);
+    return new Blob([], { type: 'application/octet-stream' });
+  }
+}
+
+export async function saveFileToFirestore(sessionId: string, fileDataUrl: string): Promise<void> {
+  if (!fileDataUrl) return;
+  try {
+    const sessionRef = doc(db, 'sessions', sessionId);
+    const CHUNK_SIZE = 400000;
+
+    if (fileDataUrl.length <= CHUNK_SIZE) {
+      await updateDoc(sessionRef, {
+        fileDataUrl,
+        isChunked: false
+      }).catch(async () => {
+        await setDoc(sessionRef, { fileDataUrl, isChunked: false }, { merge: true });
+      });
+    } else {
+      const chunksCount = Math.ceil(fileDataUrl.length / CHUNK_SIZE);
+      await updateDoc(sessionRef, {
+        fileDataUrl: '',
+        isChunked: true,
+        chunksCount
+      }).catch(async () => {
+        await setDoc(sessionRef, { fileDataUrl: '', isChunked: true, chunksCount }, { merge: true });
+      });
+
+      const chunkPromises = [];
+      for (let i = 0; i < chunksCount; i++) {
+        const chunkData = fileDataUrl.substring(i * CHUNK_SIZE, (i + 1) * CHUNK_SIZE);
+        const chunkRef = doc(db, 'sessions', sessionId, 'chunks', `chunk_${i}`);
+        chunkPromises.push(setDoc(chunkRef, {
+          index: i,
+          data: chunkData,
+          totalChunks: chunksCount,
+          createdAt: Date.now()
+        }));
+      }
+      await Promise.all(chunkPromises);
+      console.log(`[FIRESTORE] Saved ${fileDataUrl.length} bytes in ${chunksCount} chunks for session ${sessionId}`);
+    }
+  } catch (err) {
+    console.error('[FIRESTORE] Error saving file to Firestore:', err);
+  }
+}
+
+export async function getFileFromFirestore(sessionId: string): Promise<string | null> {
+  try {
+    const sessionRef = doc(db, 'sessions', sessionId);
+    const snap = await getDoc(sessionRef);
+
+    if (snap.exists()) {
+      const data = snap.data();
+      if (data.fileDataUrl && data.fileDataUrl.length > 50) {
+        return data.fileDataUrl;
+      }
+    }
+
+    // Check chunks subcollection
+    const chunksRef = collection(db, 'sessions', sessionId, 'chunks');
+    const chunksSnap = await getDocs(chunksRef);
+
+    if (!chunksSnap.empty) {
+      const chunks: { index: number; data: string }[] = [];
+      chunksSnap.forEach(d => {
+        const chunkData = d.data();
+        if (typeof chunkData.index === 'number' && typeof chunkData.data === 'string') {
+          chunks.push({ index: chunkData.index, data: chunkData.data });
+        }
+      });
+
+      chunks.sort((a, b) => a.index - b.index);
+      const fullDataUrl = chunks.map(c => c.data).join('');
+      console.log(`[FIRESTORE] Reconstructed file ${fullDataUrl.length} bytes from ${chunks.length} chunks`);
+      return fullDataUrl;
+    }
+  } catch (err) {
+    console.error('[FIRESTORE] Error getting file from Firestore:', err);
+  }
+  return null;
+}
+
+export async function purgeFirestoreSession(sessionId: string): Promise<void> {
+  try {
+    const sessionRef = doc(db, 'sessions', sessionId);
+    await updateDoc(sessionRef, {
+      status: 'purged',
+      purgedAt: Date.now(),
+      fileDataUrl: '',
+      fileUrl: '',
+      isChunked: false
+    }).catch(() => {});
+
+    // Delete chunks
+    const chunksRef = collection(db, 'sessions', sessionId, 'chunks');
+    const chunksSnap = await getDocs(chunksRef).catch(() => null);
+    if (chunksSnap && !chunksSnap.empty) {
+      const deletePromises: Promise<void>[] = [];
+      chunksSnap.forEach(d => {
+        deletePromises.push(deleteDoc(d.ref).catch(() => {}));
+      });
+      await Promise.all(deletePromises);
+    }
+  } catch (err) {
+    console.warn('[FIRESTORE] Error purging session:', err);
   }
 }
 
@@ -90,12 +213,16 @@ export async function directUploadFile(
     };
   }
 
-  // Sync to Firestore Cloud DB
+  // Ensure full fileDataUrl is retained on memory session object
+  session.fileDataUrl = fileDataUrl;
+
+  // Sync session & file chunks to Firestore Cloud DB
   try {
     const sessionRef = doc(db, 'sessions', session.id);
-    await setDoc(sessionRef, session);
+    await setDoc(sessionRef, { ...session, fileDataUrl: fileDataUrl.length < 400000 ? fileDataUrl : '' });
+    await saveFileToFirestore(session.id, fileDataUrl);
   } catch (e) {
-    // ignore
+    console.error('Error syncing session or file chunks to Firestore:', e);
   }
 
   saveOrUpdateLocalSession(session);
@@ -118,6 +245,10 @@ export async function directLookupCode(quickCode: string): Promise<EphemeralSess
     if (res.ok) {
       const data = await res.json();
       if (data.success && data.session) {
+        if (!data.session.fileDataUrl) {
+          const fetched = await getFileFromFirestore(data.session.id);
+          if (fetched) data.session.fileDataUrl = fetched;
+        }
         saveOrUpdateLocalSession(data.session);
         return data.session;
       }
@@ -141,8 +272,13 @@ export async function directLookupCode(quickCode: string): Promise<EphemeralSess
     });
 
     if (matches.length > 0) {
-      saveOrUpdateLocalSession(matches[0]);
-      return matches[0];
+      const match = matches[0];
+      if (!match.fileDataUrl) {
+        const fetched = await getFileFromFirestore(match.id);
+        if (fetched) match.fileDataUrl = fetched;
+      }
+      saveOrUpdateLocalSession(match);
+      return match;
     }
   } catch (err) {
     console.error('Firestore direct lookup error:', err);
@@ -152,6 +288,10 @@ export async function directLookupCode(quickCode: string): Promise<EphemeralSess
   const localSessions = getLocalSessions();
   const match = localSessions.find(s => s.quickCode === codeStr && s.status !== 'purged');
   if (match) {
+    if (!match.fileDataUrl) {
+      const fetched = await getFileFromFirestore(match.id);
+      if (fetched) match.fileDataUrl = fetched;
+    }
     return match;
   }
 
@@ -362,19 +502,18 @@ export async function donorAttachFile(
     fileUrl: `/api/ephemeral/download/${sessionId}`,
     donorCode,
     donorCodeCreatedAt: now,
-    donorCodeExpiresAt: now + 15 * 60 * 1000,
+    donorCodeExpiresAt: now + 3 * 60 * 1000,
     status: 'pending_receiver_unlock' as const
   };
 
-  // Only store fileDataUrl in Firestore if it's smaller than 400KB to prevent 1MB Firestore limit
-  if (fileDataUrl && fileDataUrl.length < 400000) {
-    updateFields.fileDataUrl = fileDataUrl;
-  }
-
-  // 2. Update Firestore for real-time signaling (lightweight payload < 1KB)
+  // 2. Save file chunks to Firestore Cloud DB
   try {
+    await saveFileToFirestore(sessionId, fileDataUrl);
     const sessionRef = doc(db, 'sessions', sessionId);
-    await updateDoc(sessionRef, updateFields);
+    await updateDoc(sessionRef, {
+      ...updateFields,
+      fileDataUrl: fileDataUrl.length < 400000 ? fileDataUrl : ''
+    });
     const snap = await getDoc(sessionRef);
     if (snap.exists()) {
       const fsSession = snap.data() as EphemeralSession;
@@ -384,6 +523,10 @@ export async function donorAttachFile(
     console.error('[API] Firestore updateDoc error:', err);
   }
 
+  if (updatedSession) {
+    updatedSession.fileDataUrl = fileDataUrl;
+  }
+
   // 3. Update LocalStorage
   const localSessions = getLocalSessions();
   const index = localSessions.findIndex(s => s.id === sessionId);
@@ -391,7 +534,7 @@ export async function donorAttachFile(
     const localUpdated: EphemeralSession = {
       ...localSessions[index],
       ...updateFields,
-      fileDataUrl // store full locally if available
+      fileDataUrl
     };
     saveOrUpdateLocalSession(localUpdated);
     if (!updatedSession) updatedSession = localUpdated;
@@ -434,7 +577,7 @@ export async function receiverUnlock(sessionId: string, donorCode: string): Prom
   const updateFields = {
     status: 'unlocked' as const,
     unlockedAt: now,
-    unlockedExpiresAt: now + 30 * 60 * 1000
+    unlockedExpiresAt: now + 3 * 60 * 1000
   };
 
   // 2. Update Firestore
@@ -456,7 +599,13 @@ export async function receiverUnlock(sessionId: string, donorCode: string): Prom
     console.warn('[API] Firestore unlock warning:', err);
   }
 
-  // 3. Local Fallback
+  // 3. Ensure fileDataUrl is loaded from Firestore if missing
+  if (unlockedSession && !unlockedSession.fileDataUrl) {
+    const fetched = await getFileFromFirestore(sessionId);
+    if (fetched) unlockedSession.fileDataUrl = fetched;
+  }
+
+  // 4. Local Fallback
   const localSessions = getLocalSessions();
   const index = localSessions.findIndex(s => s.id === sessionId);
   if (index !== -1) {
@@ -464,7 +613,10 @@ export async function receiverUnlock(sessionId: string, donorCode: string): Prom
     if (s.donorCode === codeStr || s.status === 'unlocked') {
       s.status = 'unlocked';
       s.unlockedAt = now;
-      s.unlockedExpiresAt = now + 30 * 60 * 1000;
+      s.unlockedExpiresAt = now + 3 * 60 * 1000;
+      if (!s.fileDataUrl && unlockedSession?.fileDataUrl) {
+        s.fileDataUrl = unlockedSession.fileDataUrl;
+      }
       saveLocalSessions(localSessions);
       if (!unlockedSession) unlockedSession = s;
     } else {
@@ -492,18 +644,8 @@ export async function confirmPurge(sessionId: string): Promise<void> {
     // ignore
   }
 
-  // 2. Firestore Cloud DB update
-  try {
-    const sessionRef = doc(db, 'sessions', sessionId);
-    await updateDoc(sessionRef, {
-      status: 'purged',
-      purgedAt: Date.now(),
-      fileDataUrl: '',
-      fileUrl: ''
-    });
-  } catch (err) {
-    console.warn('[API] Firestore purge update warning:', err);
-  }
+  // 2. Firestore Cloud DB purge (documents + chunks)
+  await purgeFirestoreSession(sessionId);
 
   // 3. LocalStorage update
   const sessions = getLocalSessions();
@@ -529,15 +671,7 @@ export async function donorRevoke(sessionId: string): Promise<void> {
   }
 
   // 2. Firestore
-  try {
-    const sessionRef = doc(db, 'sessions', sessionId);
-    await updateDoc(sessionRef, {
-      status: 'revoked',
-      fileDataUrl: ''
-    });
-  } catch (err) {
-    // ignore
-  }
+  await purgeFirestoreSession(sessionId);
 
   // 3. Local
   const sessions = getLocalSessions();
@@ -557,6 +691,10 @@ export async function fetchSessionStatus(sessionId: string): Promise<EphemeralSe
     if (contentType.includes('application/json')) {
       const data = await res.json();
       if (res.ok && data.success && data.session) {
+        if (!data.session.fileDataUrl) {
+          const fetched = await getFileFromFirestore(sessionId);
+          if (fetched) data.session.fileDataUrl = fetched;
+        }
         saveOrUpdateLocalSession(data.session);
         return data.session;
       }
@@ -571,6 +709,10 @@ export async function fetchSessionStatus(sessionId: string): Promise<EphemeralSe
     const snap = await getDoc(sessionRef);
     if (snap.exists()) {
       const data = snap.data() as EphemeralSession;
+      if (!data.fileDataUrl) {
+        const fetched = await getFileFromFirestore(sessionId);
+        if (fetched) data.fileDataUrl = fetched;
+      }
       saveOrUpdateLocalSession(data);
       return data;
     }
@@ -586,9 +728,13 @@ export async function fetchSessionStatus(sessionId: string): Promise<EphemeralSe
 export function subscribeToSession(sessionId: string, callback: (session: EphemeralSession) => void) {
   try {
     const sessionRef = doc(db, 'sessions', sessionId);
-    return onSnapshot(sessionRef, (snap) => {
+    return onSnapshot(sessionRef, async (snap) => {
       if (snap.exists()) {
         const data = snap.data() as EphemeralSession;
+        if (!data.fileDataUrl && (data.status === 'unlocked' || data.status === 'pending_receiver_unlock')) {
+          const fetched = await getFileFromFirestore(sessionId);
+          if (fetched) data.fileDataUrl = fetched;
+        }
         saveOrUpdateLocalSession(data);
         callback(data);
       }
