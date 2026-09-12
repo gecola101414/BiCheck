@@ -1,0 +1,6 @@
+{
+  "name": "SafeHandshake - Vault Share",
+  "description": "Archivio cloud personale e condivisione sicura a tempo tramite codice bilaterale a 4 cifre e minimizzazione GDPR dei dati.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
