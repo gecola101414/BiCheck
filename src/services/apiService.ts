@@ -69,46 +69,10 @@ export function dataUrlToBlob(dataUrl: string): Blob {
   }
 }
 
-export async function saveFileToFirestore(sessionId: string, fileDataUrl: string): Promise<void> {
-  if (!fileDataUrl) return;
-  try {
-    const sessionRef = doc(db, 'sessions', sessionId);
-    const CHUNK_SIZE = 400000;
-
-    if (fileDataUrl.length <= CHUNK_SIZE) {
-      await updateDoc(sessionRef, {
-        fileDataUrl,
-        isChunked: false
-      }).catch(async () => {
-        await setDoc(sessionRef, { fileDataUrl, isChunked: false }, { merge: true });
-      });
-    } else {
-      const chunksCount = Math.ceil(fileDataUrl.length / CHUNK_SIZE);
-      await updateDoc(sessionRef, {
-        fileDataUrl: '',
-        isChunked: true,
-        chunksCount
-      }).catch(async () => {
-        await setDoc(sessionRef, { fileDataUrl: '', isChunked: true, chunksCount }, { merge: true });
-      });
-
-      const chunkPromises = [];
-      for (let i = 0; i < chunksCount; i++) {
-        const chunkData = fileDataUrl.substring(i * CHUNK_SIZE, (i + 1) * CHUNK_SIZE);
-        const chunkRef = doc(db, 'sessions', sessionId, 'chunks', `chunk_${i}`);
-        chunkPromises.push(setDoc(chunkRef, {
-          index: i,
-          data: chunkData,
-          totalChunks: chunksCount,
-          createdAt: Date.now()
-        }));
-      }
-      await Promise.all(chunkPromises);
-      console.log(`[FIRESTORE] Saved ${fileDataUrl.length} bytes in ${chunksCount} chunks for session ${sessionId}`);
-    }
-  } catch (err) {
-    console.error('[FIRESTORE] Error saving file to Firestore:', err);
-  }
+export async function saveFileToFirestore(_sessionId: string, _fileDataUrl: string): Promise<void> {
+  // Files are stored securely on the Express server disk and cached in memory.
+  // We avoid writing heavy file chunks to Firestore to prevent daily quota exhaustion.
+  return;
 }
 
 export async function getFileFromFirestore(sessionId: string): Promise<string | null> {
@@ -126,28 +90,8 @@ export async function getFileFromFirestore(sessionId: string): Promise<string | 
         return data.fileDataUrl;
       }
     }
-
-    // Check chunks subcollection
-    const chunksRef = collection(db, 'sessions', sessionId, 'chunks');
-    const chunksSnap = await getDocs(chunksRef);
-
-    if (!chunksSnap.empty) {
-      const chunks: { index: number; data: string }[] = [];
-      chunksSnap.forEach(d => {
-        const chunkData = d.data();
-        if (typeof chunkData.index === 'number' && typeof chunkData.data === 'string') {
-          chunks.push({ index: chunkData.index, data: chunkData.data });
-        }
-      });
-
-      chunks.sort((a, b) => a.index - b.index);
-      const fullDataUrl = chunks.map(c => c.data).join('');
-      console.log(`[FIRESTORE] Reconstructed file ${fullDataUrl.length} bytes from ${chunks.length} chunks`);
-      cacheClientFile(sessionId, fullDataUrl);
-      return fullDataUrl;
-    }
   } catch (err) {
-    console.error('[FIRESTORE] Error getting file from Firestore:', err);
+    // Gracefully handle quota limit or network issues
   }
   return null;
 }
@@ -160,22 +104,10 @@ export async function purgeFirestoreSession(sessionId: string): Promise<void> {
       status: 'purged',
       purgedAt: Date.now(),
       fileDataUrl: '',
-      fileUrl: '',
-      isChunked: false
+      fileUrl: ''
     }).catch(() => {});
-
-    // Delete chunks
-    const chunksRef = collection(db, 'sessions', sessionId, 'chunks');
-    const chunksSnap = await getDocs(chunksRef).catch(() => null);
-    if (chunksSnap && !chunksSnap.empty) {
-      const deletePromises: Promise<void>[] = [];
-      chunksSnap.forEach(d => {
-        deletePromises.push(deleteDoc(d.ref).catch(() => {}));
-      });
-      await Promise.all(deletePromises);
-    }
   } catch (err) {
-    console.warn('[FIRESTORE] Error purging session:', err);
+    // ignore quota / network warnings
   }
 }
 
@@ -249,13 +181,12 @@ export async function directUploadFile(
   // Ensure full fileDataUrl is retained on memory session object
   session.fileDataUrl = fileDataUrl;
 
-  // Sync session & file chunks to Firestore Cloud DB
+  // Sync session metadata to Firestore Cloud DB if available
   try {
     const sessionRef = doc(db, 'sessions', session.id);
-    await setDoc(sessionRef, { ...session, fileDataUrl: fileDataUrl.length < 400000 ? fileDataUrl : '' });
-    await saveFileToFirestore(session.id, fileDataUrl);
+    await setDoc(sessionRef, { ...session, fileDataUrl: '' }).catch(() => {});
   } catch (e) {
-    console.error('Error syncing session or file chunks to Firestore:', e);
+    // ignore quota/network
   }
 
   saveOrUpdateLocalSession(session);
@@ -550,21 +481,22 @@ export async function donorAttachFile(
     status: 'pending_receiver_unlock' as const
   };
 
-  // 2. Save file chunks to Firestore Cloud DB
+  // 2. Sync session metadata to Firestore Cloud DB if available
   try {
-    await saveFileToFirestore(sessionId, fileDataUrl);
     const sessionRef = doc(db, 'sessions', sessionId);
     await updateDoc(sessionRef, {
       ...updateFields,
-      fileDataUrl: fileDataUrl.length < 400000 ? fileDataUrl : ''
+      fileDataUrl: ''
+    }).catch(async () => {
+      await setDoc(sessionRef, { ...updateFields, id: sessionId, fileDataUrl: '' }, { merge: true }).catch(() => {});
     });
-    const snap = await getDoc(sessionRef);
-    if (snap.exists()) {
+    const snap = await getDoc(sessionRef).catch(() => null);
+    if (snap && snap.exists()) {
       const fsSession = snap.data() as EphemeralSession;
       if (!updatedSession) updatedSession = fsSession;
     }
   } catch (err) {
-    console.error('[API] Firestore updateDoc error:', err);
+    // ignore quota/network
   }
 
   if (updatedSession) {
@@ -772,20 +704,25 @@ export async function fetchSessionStatus(sessionId: string): Promise<EphemeralSe
 export function subscribeToSession(sessionId: string, callback: (session: EphemeralSession) => void) {
   try {
     const sessionRef = doc(db, 'sessions', sessionId);
-    return onSnapshot(sessionRef, async (snap) => {
-      if (snap.exists()) {
-        const data = snap.data() as EphemeralSession;
-        let fileData = getClientCachedFile(sessionId);
-        if (!fileData && (data.status === 'unlocked' || data.status === 'pending_receiver_unlock')) {
-          fileData = await getFileFromFirestore(sessionId);
+    return onSnapshot(
+      sessionRef,
+      async (snap) => {
+        if (snap.exists()) {
+          const data = snap.data() as EphemeralSession;
+          let fileData = getClientCachedFile(sessionId);
+          if (fileData) {
+            data.fileDataUrl = fileData;
+          }
+          saveOrUpdateLocalSession(data);
+          callback(data);
         }
-        if (fileData) {
-          data.fileDataUrl = fileData;
-        }
-        saveOrUpdateLocalSession(data);
-        callback(data);
+      },
+      (err) => {
+        // Silently catch Firestore quota limits or backoff errors
+        // Polling via Express server REST API handles synchronization seamlessly
+        console.warn('[FIRESTORE REALTIME SYNC] Using Express API fallback:', err.message);
       }
-    });
+    );
   } catch (err) {
     console.warn('[API] Subscription error:', err);
     return () => {};
