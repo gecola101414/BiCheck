@@ -5,9 +5,9 @@ import { createServer as createViteServer } from "vite";
 
 const app = express();
 
-// Set 2000 MB payload limit for E2EE encrypted real files up to 1 GB
-app.use(express.json({ limit: "2000mb" }));
-app.use(express.urlencoded({ limit: "2000mb", extended: true }));
+// Set 100 MB payload limit to prevent Node V8 heap memory crash
+app.use(express.json({ limit: "100mb" }));
+app.use(express.urlencoded({ limit: "100mb", extended: true }));
 
 const PORT = 3000;
 const STORE_FILE = path.join(process.cwd(), ".sessions_store.json");
@@ -46,9 +46,14 @@ interface EphemeralSessionInternal {
 let activeSessions: Map<string, EphemeralSessionInternal> = new Map();
 const fileMemoryStore: Map<string, string> = new Map();
 
-// Save file data blob to disk & memory
+// Save file data blob to disk & optional memory
 function saveFileBlob(sessionId: string, dataUrl: string) {
-  fileMemoryStore.set(sessionId, dataUrl);
+  // Store in memory if small, otherwise rely on disk to keep Node RAM lean
+  if (dataUrl.length < 500000) {
+    fileMemoryStore.set(sessionId, dataUrl);
+  } else {
+    fileMemoryStore.delete(sessionId);
+  }
   try {
     const filePath = path.join(BLOBS_DIR, `${sessionId}.dat`);
     fs.writeFileSync(filePath, dataUrl, "utf-8");

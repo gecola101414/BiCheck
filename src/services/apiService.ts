@@ -15,11 +15,38 @@ import {
 
 const STORAGE_KEY = 'safehandshake_ephemeral_sessions';
 
+const clientMemoryFileCache = new Map<string, string>();
+
+export function cacheClientFile(sessionId: string, dataUrl: string) {
+  if (sessionId && dataUrl) {
+    clientMemoryFileCache.set(sessionId, dataUrl);
+  }
+}
+
+export function getClientCachedFile(sessionId: string): string | null {
+  return clientMemoryFileCache.get(sessionId) || null;
+}
+
+export function clearClientCachedFile(sessionId: string) {
+  clientMemoryFileCache.delete(sessionId);
+}
+
 export function getLocalSessions(): EphemeralSession[] {
   try {
     const data = localStorage.getItem(STORAGE_KEY);
-    return data ? JSON.parse(data) : [];
+    if (!data) return [];
+    const parsed: EphemeralSession[] = JSON.parse(data);
+    return parsed.map(s => {
+      const cached = getClientCachedFile(s.id);
+      if (cached) {
+        s.fileDataUrl = cached;
+      }
+      return s;
+    });
   } catch {
+    try {
+      localStorage.removeItem(STORAGE_KEY);
+    } catch {}
     return [];
   }
 }
@@ -85,6 +112,9 @@ export async function saveFileToFirestore(sessionId: string, fileDataUrl: string
 }
 
 export async function getFileFromFirestore(sessionId: string): Promise<string | null> {
+  const cached = getClientCachedFile(sessionId);
+  if (cached) return cached;
+
   try {
     const sessionRef = doc(db, 'sessions', sessionId);
     const snap = await getDoc(sessionRef);
@@ -92,6 +122,7 @@ export async function getFileFromFirestore(sessionId: string): Promise<string | 
     if (snap.exists()) {
       const data = snap.data();
       if (data.fileDataUrl && data.fileDataUrl.length > 50) {
+        cacheClientFile(sessionId, data.fileDataUrl);
         return data.fileDataUrl;
       }
     }
@@ -112,6 +143,7 @@ export async function getFileFromFirestore(sessionId: string): Promise<string | 
       chunks.sort((a, b) => a.index - b.index);
       const fullDataUrl = chunks.map(c => c.data).join('');
       console.log(`[FIRESTORE] Reconstructed file ${fullDataUrl.length} bytes from ${chunks.length} chunks`);
+      cacheClientFile(sessionId, fullDataUrl);
       return fullDataUrl;
     }
   } catch (err) {
@@ -121,6 +153,7 @@ export async function getFileFromFirestore(sessionId: string): Promise<string | 
 }
 
 export async function purgeFirestoreSession(sessionId: string): Promise<void> {
+  clearClientCachedFile(sessionId);
   try {
     const sessionRef = doc(db, 'sessions', sessionId);
     await updateDoc(sessionRef, {
@@ -300,21 +333,32 @@ export async function directLookupCode(quickCode: string): Promise<EphemeralSess
 
 export function saveLocalSessions(sessions: EphemeralSession[]) {
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(sessions));
+    const sanitized = sessions.map(s => {
+      const copy = { ...s };
+      if (copy.fileDataUrl) {
+        cacheClientFile(copy.id, copy.fileDataUrl);
+        delete copy.fileDataUrl;
+      }
+      return copy;
+    });
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(sanitized));
     window.dispatchEvent(new Event('storage'));
     window.dispatchEvent(new Event('safehandshake_sync'));
-  } catch {
-    // ignore
+  } catch (err) {
+    console.warn('[STORAGE] Failed to save local session to localStorage:', err);
   }
 }
 
 export function saveOrUpdateLocalSession(session: EphemeralSession) {
+  if (session.fileDataUrl) {
+    cacheClientFile(session.id, session.fileDataUrl);
+  }
   const sessions = getLocalSessions();
   const index = sessions.findIndex(s => s.id === session.id);
   if (index !== -1) {
-    sessions[index] = session;
+    sessions[index] = { ...session };
   } else {
-    sessions.push(session);
+    sessions.push({ ...session });
   }
   saveLocalSessions(sessions);
 }
@@ -731,9 +775,12 @@ export function subscribeToSession(sessionId: string, callback: (session: Epheme
     return onSnapshot(sessionRef, async (snap) => {
       if (snap.exists()) {
         const data = snap.data() as EphemeralSession;
-        if (!data.fileDataUrl && (data.status === 'unlocked' || data.status === 'pending_receiver_unlock')) {
-          const fetched = await getFileFromFirestore(sessionId);
-          if (fetched) data.fileDataUrl = fetched;
+        let fileData = getClientCachedFile(sessionId);
+        if (!fileData && (data.status === 'unlocked' || data.status === 'pending_receiver_unlock')) {
+          fileData = await getFileFromFirestore(sessionId);
+        }
+        if (fileData) {
+          data.fileDataUrl = fileData;
         }
         saveOrUpdateLocalSession(data);
         callback(data);
