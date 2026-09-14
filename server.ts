@@ -540,7 +540,7 @@ app.post("/api/folder/join", (req, res) => {
 
 app.post("/api/folder/:folderId/upload", (req, res) => {
   const { folderId } = req.params;
-  const { name, size, type, fileDataUrl, donorId } = req.body;
+  const { name, size, type, fileDataUrl, donorId, fileId: requestedFileId } = req.body;
   const folder = activeFolders.get(folderId);
 
   if (!folder || folder.status !== 'active' || Date.now() > folder.expiresAt) {
@@ -551,7 +551,7 @@ app.post("/api/folder/:folderId/upload", (req, res) => {
     return res.status(400).json({ error: "Limite di 5 file raggiunto per questa cartella." });
   }
 
-  const fileId = "file_" + Math.random().toString(36).substring(2, 9);
+  const fileId = requestedFileId || ("file_" + Math.random().toString(36).substring(2, 9));
   const fileEntry = {
     id: fileId,
     name: name || "file",

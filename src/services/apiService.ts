@@ -910,51 +910,52 @@ export async function addFileToSharedFolder(folderId: string, file: File, dataUr
         size: file.size,
         type: file.type,
         fileDataUrl: dataUrl,
-        donorId
+        donorId,
+        fileId // Send local ID to server
       })
     });
+    
+    // Even if server fails or is stateless, we continue with cloud sync
     if (res.ok) {
       const data = await res.json();
       if (data.success) {
-        // Update Firestore to notify others
+        // Sync to Firestore using the confirmed file list from server
         const folderRef = doc(db, 'folders', folderId);
         await wrapFirestore(updateDoc(folderRef, { files: data.folder.files }), null);
-        return true;
       }
     }
   } catch (err) {
     console.warn('[API] Folder server upload failed, using direct cloud sync:', err);
-  }
-
-  // Client-side fallback (Cloud-Native)
-  try {
+    
+    // Stateless Fallback: Update Firestore list directly
     const folderRef = doc(db, 'folders', folderId);
     const snap = await wrapFirestore(getDoc(folderRef), null);
     if (snap && snap.exists()) {
       const currentFolder = snap.data() as SharedFolder;
-      if (currentFolder.files.length >= 5) return false;
-
-      // Limit Firestore inline data to ~800KB to stay safe under 1MB doc limit
-      const safeDataUrl = dataUrl.length < 800000 ? dataUrl : '';
-      const updatedFiles = [...currentFolder.files, { ...fileEntry, fileDataUrl: safeDataUrl }];
-      await wrapFirestore(updateDoc(folderRef, { files: updatedFiles }), null);
-      
-      // If file was too large, store in chunks
-      if (dataUrl.length >= 800000) {
-        const chunkSize = 800000;
-        const totalChunks = Math.ceil(dataUrl.length / chunkSize);
-        for (let i = 0; i < totalChunks; i++) {
-          const chunk = dataUrl.substring(i * chunkSize, (i + 1) * chunkSize);
-          const chunkRef = doc(db, 'folders', folderId, 'file_chunks', `${fileId}_${i}`);
-          await wrapFirestore(setDoc(chunkRef, { data: chunk, index: i, fileId }), null);
-        }
+      if (currentFolder.files.length < 5) {
+        const updatedFiles = [...currentFolder.files, { ...fileEntry, fileDataUrl: dataUrl.length < 800000 ? dataUrl : '' }];
+        await wrapFirestore(updateDoc(folderRef, { files: updatedFiles }), null);
       }
-      return true;
     }
-  } catch (err) {
-    console.error('[API] Direct cloud upload error:', err);
   }
-  return false;
+
+  // Always save chunks for large files using the consistent fileId
+  if (dataUrl.length >= 800000) {
+    try {
+      const chunkSize = 800000;
+      const totalChunks = Math.ceil(dataUrl.length / chunkSize);
+      for (let i = 0; i < totalChunks; i++) {
+        const chunk = dataUrl.substring(i * chunkSize, (i + 1) * chunkSize);
+        const chunkRef = doc(db, 'folders', folderId, 'file_chunks', `${fileId}_${i}`);
+        await wrapFirestore(setDoc(chunkRef, { data: chunk, index: i, fileId }), null);
+      }
+    } catch (err) {
+      console.error('[API] Error saving chunks to Firestore:', err);
+      return false;
+    }
+  }
+
+  return true;
 }
 
 export async function removeFileFromSharedFolder(folderId: string, fileId: string): Promise<boolean> {

@@ -6,7 +6,11 @@
 
 // Derive a 256-bit AES-GCM CryptoKey from receiverCode + donorCode
 async function deriveKey(receiverCode: string, donorCode: string): Promise<CryptoKey> {
-  const secretString = `GECOLASHARE_E2EE_${receiverCode.trim()}_${donorCode.trim()}_2026@AETERNA`;
+  // Normalize codes: 4 digits, trimmed, uppercase (if any letters were to be added)
+  const rCode = receiverCode.trim().substring(0, 4);
+  const dCode = donorCode.trim().substring(0, 4);
+  
+  const secretString = `GECOLASHARE_E2EE_${rCode}_${dCode}_2026@AETERNA`;
   const encoder = new TextEncoder();
   const keyData = encoder.encode(secretString);
 

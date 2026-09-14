@@ -130,25 +130,21 @@ export const MinimalReceiverView: React.FC = () => {
       const decryptedDataUrl = await decryptPayload(
         rawDataUrl,
         session.receiverCode,
-        session.donorCode || donorCodeInput
+        donorCodeInput.trim() // Use the actual input to avoid any state delay
       );
 
       // 3. Convert Data URL or text directly to Blob in browser memory
       let blob: Blob;
-      if (decryptedDataUrl.startsWith('data:')) {
-        const commaIdx = decryptedDataUrl.indexOf(',');
-        const header = decryptedDataUrl.substring(0, commaIdx);
-        const base64Str = decryptedDataUrl.substring(commaIdx + 1);
-        const mimeMatch = header.match(/^data:(.+);base64/);
-        const mime = mimeMatch ? mimeMatch[1] : (session.fileType || 'application/pdf');
-
-        const binaryStr = atob(base64Str);
-        const len = binaryStr.length;
-        const bytes = new Uint8Array(len);
-        for (let i = 0; i < len; i++) {
-          bytes[i] = binaryStr.charCodeAt(i);
+      if (decryptedDataUrl.includes('base64,')) {
+        const parts = decryptedDataUrl.split(',');
+        const mime = parts[0].match(/:(.*?);/)?.[1] || session.fileType || 'application/pdf';
+        const bstr = atob(parts[1]);
+        let n = bstr.length;
+        const u8arr = new Uint8Array(n);
+        while (n--) {
+          u8arr[n] = bstr.charCodeAt(n);
         }
-        blob = new Blob([bytes], { type: mime });
+        blob = new Blob([u8arr], { type: mime });
       } else {
         blob = new Blob([decryptedDataUrl], { type: session.fileType || 'text/plain' });
       }
