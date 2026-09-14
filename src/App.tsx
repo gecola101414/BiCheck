@@ -12,8 +12,11 @@ import {
   setDoc, 
   getDoc, 
   deleteDoc, 
-  serverTimestamp 
+  serverTimestamp,
+  updateDoc,
+  onSnapshot
 } from 'firebase/firestore';
+import { getAuth, signInAnonymously } from 'firebase/auth';
 import { 
   Shield, 
   Upload, 
@@ -37,7 +40,41 @@ function cn(...inputs: ClassValue[]) {
 
 // Initialize Firebase
 const app = initializeApp(firebaseConfig);
-const db = getFirestore(app);
+const db = getFirestore(app, (firebaseConfig as any).firestoreDatabaseId);
+const auth = getAuth(app);
+
+enum OperationType {
+  CREATE = 'create',
+  UPDATE = 'update',
+  DELETE = 'delete',
+  LIST = 'list',
+  GET = 'get',
+  WRITE = 'write',
+}
+
+interface FirestoreErrorInfo {
+  error: string;
+  operationType: OperationType;
+  path: string | null;
+  authInfo: {
+    userId?: string | null;
+    email?: string | null;
+  }
+}
+
+function handleFirestoreError(error: unknown, operationType: OperationType, path: string | null) {
+  const errInfo: FirestoreErrorInfo = {
+    error: error instanceof Error ? error.message : String(error),
+    authInfo: {
+      userId: null,
+      email: null,
+    },
+    operationType,
+    path
+  }
+  console.error('Firestore Error: ', JSON.stringify(errInfo));
+  return JSON.stringify(errInfo);
+}
 
 // Types
 interface IDDocument {
@@ -66,6 +103,7 @@ export default function App() {
 
   useEffect(() => {
     loadArchive();
+    signInAnonymously(auth).catch(err => console.error('Auth error:', err));
   }, []);
 
   const loadArchive = async () => {
@@ -79,11 +117,50 @@ export default function App() {
     }
   };
 
+  const compressImage = (base64Str: string, maxWidth = 1200, maxHeight = 1200, quality = 0.7): Promise<string> => {
+    return new Promise((resolve) => {
+      const img = new Image();
+      img.src = base64Str;
+      img.onload = () => {
+        const canvas = document.createElement('canvas');
+        let width = img.width;
+        let height = img.height;
+
+        if (width > height) {
+          if (width > maxWidth) {
+            height *= maxWidth / width;
+            width = maxWidth;
+          }
+        } else {
+          if (height > maxHeight) {
+            width *= maxHeight / height;
+            height = maxHeight;
+          }
+        }
+
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d');
+        ctx?.drawImage(img, 0, 0, width, height);
+        resolve(canvas.toDataURL('image/jpeg', quality));
+      };
+      img.onerror = () => resolve(base64Str);
+    });
+  };
+
   const fileToBase64 = (file: File): Promise<string> => {
     return new Promise((resolve, reject) => {
       const reader = new FileReader();
       reader.readAsDataURL(file);
-      reader.onload = () => resolve(reader.result as string);
+      reader.onload = async () => {
+        const base64 = reader.result as string;
+        if (file.type.startsWith('image/')) {
+          const compressed = await compressImage(base64);
+          resolve(compressed);
+        } else {
+          resolve(base64);
+        }
+      };
       reader.onerror = error => reject(error);
     });
   };
@@ -143,24 +220,48 @@ export default function App() {
     }
     setIsProcessing(true);
     setError(null);
+    const roomCode = Math.floor(100000 + Math.random() * 900000).toString();
+    const path = `stanze_condivisione/${roomCode}`;
+    
     try {
-      const docsToShare = myArchive.filter(d => selectedDocs.has(d.id));
-      const roomCode = Math.floor(100000 + Math.random() * 900000).toString();
-      
+      // Step 1: Create the room with 'waiting' status
       await setDoc(doc(db, 'stanze_condivisione', roomCode), {
-        documents: docsToShare.map(d => ({
-          nome: d.fileName,
-          tipo: d.fileType,
-          base64: d.base64
-        })),
+        status: 'waiting',
         createdAt: serverTimestamp()
       });
-
+      
       setGeneratedCode(roomCode);
-    } catch (err) {
-      setError('Errore nella generazione del codice.');
-      console.error(err);
-    } finally {
+      setIsProcessing(false);
+
+      // Step 2: Listen for receiver to join
+      const unsub = onSnapshot(doc(db, 'stanze_condivisione', roomCode), async (snapshot) => {
+        if (!snapshot.exists()) return;
+        const data = snapshot.data();
+        
+        if (data.status === 'joined') {
+          // Receiver joined! Now upload the documents
+          setError('Destinatario connesso. Inviando documenti...');
+          const docsToShare = myArchive.filter(d => selectedDocs.has(d.id));
+          
+          try {
+            await updateDoc(doc(db, 'stanze_condivisione', roomCode), {
+              documents: docsToShare.map(d => ({
+                nome: d.fileName,
+                tipo: d.fileType,
+                base64: d.base64
+              })),
+              status: 'ready'
+            });
+            setError('Documenti inviati con successo!');
+            unsub(); // Stop listening after success
+          } catch (err) {
+            setError(`Errore durante l'invio: ${err}`);
+          }
+        }
+      });
+
+    } catch (err: any) {
+      setError(`Errore P2P: ${err.message || 'Generazione fallita'}`);
       setIsProcessing(false);
     }
   };
@@ -172,30 +273,49 @@ export default function App() {
     }
     setIsProcessing(true);
     setError(null);
+    const path = `stanze_condivisione/${code}`;
+    
     try {
       const docRef = doc(db, 'stanze_condivisione', code);
       const docSnap = await getDoc(docRef);
 
       if (docSnap.exists()) {
-        const data = docSnap.data();
-        const documents = data.documents;
-
-        documents.forEach((file: any) => {
-          const link = document.createElement('a');
-          link.href = file.base64;
-          link.download = file.nome;
-          link.click();
+        // Step 1: Notify transmitter that we joined
+        await updateDoc(docRef, {
+          status: 'joined'
         });
+        
+        setError('Connesso. In attesa dei file...');
 
-        await deleteDoc(docRef);
-        setCode('');
-        setError('Documenti scaricati e stanza chiusa.');
+        // Step 2: Wait for transmitter to upload files
+        const unsub = onSnapshot(docRef, async (snapshot) => {
+          if (!snapshot.exists()) {
+            unsub();
+            return;
+          }
+          const data = snapshot.data();
+          if (data.status === 'ready' && data.documents) {
+            const documents = data.documents;
+            documents.forEach((file: any) => {
+              const link = document.createElement('a');
+              link.href = file.base64;
+              link.download = file.nome;
+              link.click();
+            });
+
+            await deleteDoc(docRef);
+            unsub();
+            setCode('');
+            setError('Ricezione completata!');
+            setIsProcessing(false);
+          }
+        });
       } else {
         setError('Codice errato o scaduto.');
+        setIsProcessing(false);
       }
     } catch (err) {
-      setError('Errore durante il download.');
-    } finally {
+      setError(`Errore Ricezione: ${handleFirestoreError(err, OperationType.GET, path)}`);
       setIsProcessing(false);
     }
   };
