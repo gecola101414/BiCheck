@@ -11,6 +11,7 @@ app.use(express.urlencoded({ limit: "100mb", extended: true }));
 
 const PORT = 3000;
 const STORE_FILE = path.join("/tmp", ".sessions_store.json");
+const FOLDER_STORE_FILE = path.join("/tmp", ".folders_store.json");
 const BLOBS_DIR = path.join("/tmp", ".file_blobs");
 
 if (!fs.existsSync(BLOBS_DIR)) {
@@ -143,8 +144,32 @@ function saveSessionsToDisk() {
   }
 }
 
+function loadFoldersFromDisk() {
+  try {
+    if (fs.existsSync(FOLDER_STORE_FILE)) {
+      const data = fs.readFileSync(FOLDER_STORE_FILE, "utf-8");
+      const obj = JSON.parse(data);
+      if (Array.isArray(obj)) {
+        obj.forEach(([id, folder]) => activeFolders.set(id, folder));
+      }
+    }
+  } catch (err) {
+    console.error("Error reading folders from disk:", err);
+  }
+}
+
+function saveFoldersToDisk() {
+  try {
+    const entries = Array.from(activeFolders.entries());
+    fs.writeFileSync(FOLDER_STORE_FILE, JSON.stringify(entries), "utf-8");
+  } catch (err) {
+    console.error("Error saving folders to disk:", err);
+  }
+}
+
 // Initial load
 loadSessionsFromDisk();
+loadFoldersFromDisk();
 
 function generate4DigitCode(): string {
   return Math.floor(1000 + Math.random() * 9000).toString();
@@ -519,6 +544,7 @@ app.post("/api/folder/create", (req, res) => {
   };
 
   activeFolders.set(id, folder);
+  saveFoldersToDisk();
   console.log(`[FOLDER] Created: ${code} (ID: ${id})`);
   res.json({ success: true, folder });
 });
@@ -563,6 +589,7 @@ app.post("/api/folder/:folderId/upload", (req, res) => {
 
   folder.files.push(fileEntry);
   saveFileBlob(`${folderId}_${fileId}`, fileDataUrl);
+  saveFoldersToDisk();
 
   res.json({ success: true, file: fileEntry, folder });
 });
@@ -601,6 +628,7 @@ app.delete("/api/folder/:folderId/file/:fileId", (req, res) => {
   if (folder) {
     folder.files = folder.files.filter(f => f.id !== fileId);
     purgeFileBlob(`${folderId}_${fileId}`);
+    saveFoldersToDisk();
   }
 
   res.json({ success: true });

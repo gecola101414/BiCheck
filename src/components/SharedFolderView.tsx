@@ -21,7 +21,8 @@ import {
   addFileToSharedFolder, 
   removeFileFromSharedFolder, 
   subscribeToSharedFolder,
-  fetchFileChunks
+  fetchFileChunks,
+  getSharedFolderById
 } from '../services/apiService';
 
 export const SharedFolderView: React.FC = () => {
@@ -32,9 +33,23 @@ export const SharedFolderView: React.FC = () => {
   const [uploading, setUploading] = useState(false);
   const [downloadingId, setDownloadingId] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+  const [copiedLink, setCopiedLink] = useState(false);
   const [timeLeft, setTimeLeft] = useState<string>('');
   
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const folderId = params.get('folder');
+    if (folderId && !folder) {
+      setLoading(true);
+      getSharedFolderById(folderId).then(f => {
+        if (f) setFolder(f);
+        else setError('Cartella non trovata o scaduta.');
+        setLoading(false);
+      });
+    }
+  }, []);
 
   useEffect(() => {
     const handleQuota = () => {
@@ -110,16 +125,30 @@ export const SharedFolderView: React.FC = () => {
 
     const reader = new FileReader();
     reader.onload = async (event) => {
-      const dataUrl = event.target?.result as string;
-      const donorId = Math.random().toString(36).substring(7); // Temporary identity
-      const success = await addFileToSharedFolder(folder.id, file, dataUrl, donorId);
-      if (!success) {
-        setError('Errore durante l\'upload.');
+      try {
+        const dataUrl = event.target?.result as string;
+        const donorId = Math.random().toString(36).substring(7); // Temporary identity
+        const success = await addFileToSharedFolder(folder.id, file, dataUrl, donorId);
+        if (!success) {
+          setError('Errore durante l\'upload o quota esaurita.');
+        }
+      } catch (err: any) {
+        setError(err.message || 'Errore durante l\'upload.');
+      } finally {
+        setUploading(true); // Small delay to let sync happen
+        setTimeout(() => setUploading(false), 800);
+        if (fileInputRef.current) fileInputRef.current.value = '';
       }
-      setUploading(false);
-      if (fileInputRef.current) fileInputRef.current.value = '';
     };
     reader.readAsDataURL(file);
+  };
+
+  const handleRefresh = async () => {
+    if (!folder) return;
+    setLoading(true);
+    const updated = await getSharedFolderById(folder.id);
+    if (updated) setFolder(updated);
+    setLoading(false);
   };
 
   const handleDelete = async (fileId: string) => {
@@ -180,6 +209,14 @@ export const SharedFolderView: React.FC = () => {
     navigator.clipboard.writeText(folder.code);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
+  };
+
+  const copyLink = () => {
+    if (!folder) return;
+    const url = `${window.location.origin}${window.location.pathname}?folder=${folder.id}`;
+    navigator.clipboard.writeText(url);
+    setCopiedLink(true);
+    setTimeout(() => setCopiedLink(false), 2000);
   };
 
   const formatSize = (bytes: number) => {
@@ -281,12 +318,22 @@ export const SharedFolderView: React.FC = () => {
             </div>
           </div>
         </div>
-        <button 
-          onClick={() => setFolder(null)}
-          className="p-2 hover:bg-white/10 rounded-lg transition-colors"
-        >
-          <X className="w-6 h-6" />
-        </button>
+        <div className="flex items-center gap-2">
+          <button 
+            onClick={handleRefresh}
+            disabled={loading}
+            className="p-2 hover:bg-white/10 rounded-lg transition-colors text-slate-300"
+            title="Aggiorna Sincronizzazione"
+          >
+            <FolderSync className={`w-5 h-5 ${loading ? 'animate-spin text-indigo-400' : ''}`} />
+          </button>
+          <button 
+            onClick={() => setFolder(null)}
+            className="p-2 hover:bg-white/10 rounded-lg transition-colors"
+          >
+            <X className="w-6 h-6" />
+          </button>
+        </div>
       </div>
 
       <div className="p-6 bg-indigo-50 border-b border-indigo-100 flex items-center justify-between">
@@ -294,12 +341,23 @@ export const SharedFolderView: React.FC = () => {
           <span className="text-xs font-bold text-indigo-400 uppercase tracking-wider mb-1">Codice Accesso</span>
           <div className="flex items-center gap-3">
             <span className="text-3xl font-mono font-black text-indigo-900 tracking-tighter">{folder.code}</span>
-            <button 
-              onClick={copyCode}
-              className="p-2 hover:bg-white rounded-lg transition-all text-indigo-600"
-            >
-              {copied ? <CheckCircle2 className="w-5 h-5 text-green-500" /> : <Copy className="w-5 h-5" />}
-            </button>
+            <div className="flex items-center gap-1">
+              <button 
+                onClick={copyCode}
+                title="Copia Codice"
+                className="p-2 hover:bg-white rounded-lg transition-all text-indigo-600"
+              >
+                {copied ? <CheckCircle2 className="w-5 h-5 text-green-500" /> : <Copy className="w-5 h-5" />}
+              </button>
+              <button 
+                onClick={copyLink}
+                title="Copia Link di Condivisione"
+                className="p-2 hover:bg-white rounded-lg transition-all text-indigo-600 flex items-center gap-1.5"
+              >
+                {copiedLink ? <CheckCircle2 className="w-5 h-5 text-green-500" /> : <Share2 className="w-5 h-5" />}
+                <span className="text-[10px] font-bold uppercase">Link</span>
+              </button>
+            </div>
           </div>
         </div>
         <div className="text-right">

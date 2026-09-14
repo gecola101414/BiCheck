@@ -8,7 +8,11 @@ import { SharedFolderView } from './components/SharedFolderView';
 import { ShieldCheck, Lock, Trash2, Key } from 'lucide-react';
 
 export default function App() {
-  const [mode, setMode] = useState<MinimalMode>('receiver');
+  const [mode, setMode] = useState<MinimalMode>(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.has('folder')) return 'shared_folder';
+    return 'receiver';
+  });
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans selection:bg-emerald-500 selection:text-slate-950 max-w-full overflow-x-hidden">

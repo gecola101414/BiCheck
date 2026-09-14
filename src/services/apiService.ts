@@ -867,12 +867,13 @@ export async function createSharedFolder(): Promise<SharedFolder | null> {
 }
 
 export async function joinSharedFolder(code: string): Promise<SharedFolder | null> {
+  const cleanCode = code.trim();
   // 1. Check Server
   try {
     const res = await fetch('/api/folder/join', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ code })
+      body: JSON.stringify({ code: cleanCode })
     });
     const data = await res.json();
     if (data.success) {
@@ -886,10 +887,27 @@ export async function joinSharedFolder(code: string): Promise<SharedFolder | nul
   return wrapFirestore(
     (async () => {
       const foldersRef = collection(db, 'folders');
-      const q = query(foldersRef, where('code', '==', code.trim()), where('status', '==', 'active'));
+      const q = query(foldersRef, where('code', '==', cleanCode), where('status', '==', 'active'));
       const snap = await getDocs(q);
       if (!snap.empty) {
         return snap.docs[0].data() as SharedFolder;
+      }
+      return null;
+    })(),
+    null
+  );
+}
+
+export async function getSharedFolderById(folderId: string): Promise<SharedFolder | null> {
+  return wrapFirestore(
+    (async () => {
+      const folderRef = doc(db, 'folders', folderId);
+      const snap = await getDoc(folderRef);
+      if (snap.exists()) {
+        const data = snap.data() as SharedFolder;
+        if (data.status === 'active' && Date.now() < data.expiresAt) {
+          return data;
+        }
       }
       return null;
     })(),
@@ -931,20 +949,26 @@ export async function addFileToSharedFolder(folderId: string, file: File, dataUr
       throw new Error(data.error || 'Server rejected upload or size limit hit');
     }
   } catch (err) {
-    console.warn('[API] Folder server upload failed (likely Vercel size limit or disk error), using direct cloud sync:', err);
+    console.warn('[API] Folder server upload failed, attempting direct cloud sync:', err);
     
     // Stateless Fallback: Update Firestore list directly
     const folderRef = doc(db, 'folders', folderId);
     const snap = await wrapFirestore(getDoc(folderRef), null);
     if (snap && snap.exists()) {
       const currentFolder = snap.data() as SharedFolder;
-      if (currentFolder.files.length < 5) {
-        const updatedFiles = [...currentFolder.files, { ...fileEntry, fileDataUrl: dataUrl.length < 800000 ? dataUrl : '' }];
-        await wrapFirestore(updateDoc(folderRef, { files: updatedFiles }), null);
+      if (currentFolder.files.length >= 5) {
+        throw new Error('Limite di 5 file raggiunto.');
+      }
+      const updatedFiles = [...currentFolder.files, { ...fileEntry, fileDataUrl: dataUrl.length < 800000 ? dataUrl : '' }];
+      const updateRes = await wrapFirestore(updateDoc(folderRef, { files: updatedFiles }), null);
+      if (updateRes === null && Date.now() < firestoreDisabledUntil) {
+        throw new Error('Limite di quota Firebase raggiunto. Impossibile sincronizzare il file.');
       }
     } else {
-      // Return false only if we are absolutely sure we can't even reach Firestore (quota/offline)
-      if (Date.now() < firestoreDisabledUntil) return false;
+      if (Date.now() < firestoreDisabledUntil) {
+        throw new Error('Sistema cloud non disponibile (Quota Exceeded).');
+      }
+      throw new Error('Cartella non trovata nel cloud. Sincronizzazione fallita.');
     }
   }
 
