@@ -9,6 +9,16 @@ export const MinimalDonorView: React.FC = () => {
   const [receiverCodeInput, setReceiverCodeInput] = useState('');
   const [session, setSession] = useState<EphemeralSession | null>(null);
   const [donorCode, setDonorCode] = useState<string | null>(null);
+  const [quotaExceeded, setQuotaExceeded] = useState(false);
+
+  useEffect(() => {
+    const handleQuota = () => {
+      setQuotaExceeded(true);
+      setErrorMsg('Limite cloud raggiunto (Firebase Quota). Il sistema sta usando i fallback serverless.');
+    };
+    window.addEventListener('safehandshake_quota_exceeded', handleQuota);
+    return () => window.removeEventListener('safehandshake_quota_exceeded', handleQuota);
+  }, []);
   const [donorTimer, setDonorTimer] = useState<number>(180);
 
   // File Upload state

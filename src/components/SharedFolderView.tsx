@@ -37,6 +37,14 @@ export const SharedFolderView: React.FC = () => {
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
+    const handleQuota = () => {
+      setError('Limite giornaliero Firebase raggiunto (Quota Exceeded). Il sistema è in modalità limitata. Riprova tra 5 minuti o domani.');
+    };
+    window.addEventListener('safehandshake_quota_exceeded', handleQuota);
+    return () => window.removeEventListener('safehandshake_quota_exceeded', handleQuota);
+  }, []);
+
+  useEffect(() => {
     if (!folder) return;
 
     const unsubscribe = subscribeToSharedFolder(folder.id, (updatedFolder) => {

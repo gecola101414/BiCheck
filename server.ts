@@ -10,8 +10,8 @@ app.use(express.json({ limit: "100mb" }));
 app.use(express.urlencoded({ limit: "100mb", extended: true }));
 
 const PORT = 3000;
-const STORE_FILE = path.join(process.cwd(), ".sessions_store.json");
-const BLOBS_DIR = path.join(process.cwd(), ".file_blobs");
+const STORE_FILE = path.join("/tmp", ".sessions_store.json");
+const BLOBS_DIR = path.join("/tmp", ".file_blobs");
 
 if (!fs.existsSync(BLOBS_DIR)) {
   try {

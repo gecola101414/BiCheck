@@ -72,6 +72,17 @@ export const QuickDirectTransfer: React.FC = () => {
     };
   }, [foundSession, receiveTimer, downloadSuccess]);
 
+  // Quota Exceeded Listener
+  React.useEffect(() => {
+    const handleQuota = () => {
+      const msg = 'Limite giornaliero Firebase raggiunto. Il sistema cloud è temporaneamente disabilitato. Riprova più tardi.';
+      setSendError(msg);
+      setReceiveError(msg);
+    };
+    window.addEventListener('safehandshake_quota_exceeded', handleQuota);
+    return () => window.removeEventListener('safehandshake_quota_exceeded', handleQuota);
+  }, []);
+
   // Utility format file size
   const formatSize = (bytes: number): string => {
     if (bytes < 1024) return bytes + ' B';

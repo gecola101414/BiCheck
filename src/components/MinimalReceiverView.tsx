@@ -14,6 +14,16 @@ export const MinimalReceiverView: React.FC = () => {
   const [isLoading, setIsLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [isPurged, setIsPurged] = useState(false);
+  const [quotaExceeded, setQuotaExceeded] = useState(false);
+
+  useEffect(() => {
+    const handleQuota = () => {
+      setQuotaExceeded(true);
+      setErrorMsg('Attenzione: Quota cloud esaurita. Il sistema sta usando i fallback serverless.');
+    };
+    window.addEventListener('safehandshake_quota_exceeded', handleQuota);
+    return () => window.removeEventListener('safehandshake_quota_exceeded', handleQuota);
+  }, []);
 
   const presets = [
     "Ciao! Mi mandi il documento per il check-in Hotel?",

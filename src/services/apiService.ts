@@ -16,7 +16,7 @@ import {
 const STORAGE_KEY = 'safehandshake_ephemeral_sessions';
 
 let firestoreDisabledUntil = 0;
-const FIRESTORE_TIMEOUT = 2500;
+const FIRESTORE_TIMEOUT = 8000; // Increased for chunked uploads
 
 async function wrapFirestore<T>(promise: Promise<T>, fallbackValue: T): Promise<T> {
   if (Date.now() < firestoreDisabledUntil) {
@@ -39,6 +39,7 @@ async function wrapFirestore<T>(promise: Promise<T>, fallbackValue: T): Promise<
         if (err.message?.includes('quota') || err.code === 'resource-exhausted') {
           console.error('[FIRESTORE] Quota exceeded. Disabling Firestore for 5 minutes.');
           firestoreDisabledUntil = Date.now() + 5 * 60 * 1000;
+          window.dispatchEvent(new CustomEvent('safehandshake_quota_exceeded'));
         }
         resolve(fallbackValue);
       });
@@ -353,14 +354,17 @@ export async function requestReceiverCode(message: string): Promise<EphemeralSes
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ message: cleanMessage })
     });
+    
     if (res.ok) {
       const data = await res.json();
       if (data.success && data.session) {
         createdSession = data.session;
       }
+    } else {
+      console.warn('[API] Express server returned error status:', res.status);
     }
   } catch (err) {
-    console.warn('[API] Express server call failed:', err);
+    console.warn('[API] Express server call network error:', err);
   }
 
   // Fallback generation (Serverless-ready)
@@ -783,9 +787,12 @@ export function subscribeToSession(sessionId: string, callback: (session: Epheme
   // 2. Setup Polling as primary fallback (especially for quota exceeded)
   pollInterval = setInterval(async () => {
     if (isUnsubscribed) return;
-    const session = await fetchSessionStatus(sessionId);
-    if (session) handleCallback(session);
-  }, 3500);
+    // Only poll if Firestore is disabled or fails
+    if (Date.now() < firestoreDisabledUntil) {
+      const session = await fetchSessionStatus(sessionId);
+      if (session) handleCallback(session);
+    }
+  }, 10000);
 
   // 3. Firestore Listener (if quota allows)
   let unsubscribeFirestore = () => {};
@@ -915,17 +922,16 @@ export async function addFileToSharedFolder(folderId: string, file: File, dataUr
       })
     });
     
-    // Even if server fails or is stateless, we continue with cloud sync
-    if (res.ok) {
-      const data = await res.json();
-      if (data.success) {
-        // Sync to Firestore using the confirmed file list from server
-        const folderRef = doc(db, 'folders', folderId);
-        await wrapFirestore(updateDoc(folderRef, { files: data.folder.files }), null);
-      }
+    const data = await res.json().catch(() => ({}));
+    if (res.ok && data.success) {
+      // Sync to Firestore using the confirmed file list from server
+      const folderRef = doc(db, 'folders', folderId);
+      await wrapFirestore(updateDoc(folderRef, { files: data.folder.files }), null);
+    } else {
+      throw new Error(data.error || 'Server rejected upload or size limit hit');
     }
   } catch (err) {
-    console.warn('[API] Folder server upload failed, using direct cloud sync:', err);
+    console.warn('[API] Folder server upload failed (likely Vercel size limit or disk error), using direct cloud sync:', err);
     
     // Stateless Fallback: Update Firestore list directly
     const folderRef = doc(db, 'folders', folderId);
@@ -936,6 +942,9 @@ export async function addFileToSharedFolder(folderId: string, file: File, dataUr
         const updatedFiles = [...currentFolder.files, { ...fileEntry, fileDataUrl: dataUrl.length < 800000 ? dataUrl : '' }];
         await wrapFirestore(updateDoc(folderRef, { files: updatedFiles }), null);
       }
+    } else {
+      // Return false only if we are absolutely sure we can't even reach Firestore (quota/offline)
+      if (Date.now() < firestoreDisabledUntil) return false;
     }
   }
 
@@ -1014,12 +1023,14 @@ export function subscribeToSharedFolder(folderId: string, callback: (folder: Sha
 
   // 1. Server Polling (Fallback)
   pollInterval = setInterval(async () => {
-    try {
-      const res = await fetch(`/api/folder/${folderId}/status`);
-      const data = await res.json();
-      if (data.success) handleCallback(data.folder);
-    } catch (e) {}
-  }, 4000);
+    if (Date.now() < firestoreDisabledUntil) {
+      try {
+        const res = await fetch(`/api/folder/${folderId}/status`);
+        const data = await res.json();
+        if (data.success) handleCallback(data.folder);
+      } catch (e) {}
+    }
+  }, 10000);
 
   // 2. Firestore Real-time
   let unsubscribeFS = () => {};
