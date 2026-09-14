@@ -12,7 +12,9 @@ import {
   Loader2,
   X,
   Copy,
-  CheckCircle2
+  CheckCircle2,
+  Wifi,
+  WifiOff
 } from 'lucide-react';
 import { SharedFolder, SharedFile } from '../types';
 import { 
@@ -22,8 +24,13 @@ import {
   removeFileFromSharedFolder, 
   subscribeToSharedFolder,
   fetchFileChunks,
-  getSharedFolderById
+  getSharedFolderById,
+  getFolderCachedFile,
+  cacheFolderFile
 } from '../services/apiService';
+import { WebRTCService } from '../services/webrtcService';
+import { db } from '../lib/firebase';
+import { doc, onSnapshot } from 'firebase/firestore';
 
 export const SharedFolderView: React.FC = () => {
   const [folder, setFolder] = useState<SharedFolder | null>(null);
@@ -35,8 +42,94 @@ export const SharedFolderView: React.FC = () => {
   const [copied, setCopied] = useState(false);
   const [copiedLink, setCopiedLink] = useState(false);
   const [timeLeft, setTimeLeft] = useState<string>('');
+  const [p2pState, setP2pState] = useState<'disconnected' | 'connecting' | 'connected'>('disconnected');
+  const [webrtc, setWebrtc] = useState<WebRTCService | null>(null);
+  const [p2pProgress, setP2pProgress] = useState<{ [fileId: string]: number }>({});
   
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // WebRTC for Shared Folder
+  useEffect(() => {
+    let unsubscribeSignaling = () => {};
+
+    if (folder && folder.id && folder.status === 'active' && !webrtc) {
+      const rtc = new WebRTCService();
+      rtc.setConnectionStateChange((state) => {
+        if (state === 'connected') setP2pState('connected');
+        else if (state === 'connecting') setP2pState('connecting');
+        else setP2pState('disconnected');
+      });
+
+      rtc.setOnMessage((msg) => {
+        if (msg.type === 'request_file_folder') {
+          const cached = getFolderCachedFile(folder.id, msg.fileId);
+          if (cached) {
+            rtc.sendFile(msg.fileId, cached);
+          }
+        } else if (msg.type === 'file_complete') {
+          // Trigger download automatically or store in memory
+          const file = folder.files.find(f => f.id === msg.fileId);
+          if (file) {
+            const blob = dataUrlToBlob(msg.data);
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = file.name;
+            a.click();
+            URL.revokeObjectURL(url);
+            setDownloadingId(null);
+            setP2pProgress(prev => {
+              const next = { ...prev };
+              delete next[msg.fileId];
+              return next;
+            });
+          }
+        } else if (msg.type === 'progress') {
+          setP2pProgress(prev => ({ ...prev, [msg.fileId]: msg.progress }));
+        }
+      });
+
+      // Simple 1-to-1 signaling for folder
+      const setupSignaling = async () => {
+        const offerRef = doc(db, 'folders', folder.id, 'signaling', 'offer');
+        const unsub = onSnapshot(offerRef, async (snap) => {
+          const data = snap.data();
+          if (data && data.type === 'offer' && data.sender !== 'me') {
+            rtc.handleOffer(folder.id, 'peer_' + Math.random().toString(36).substring(7), data.payload);
+            unsub();
+          }
+        });
+        unsubscribeSignaling = unsub;
+      };
+
+      // If no offer after 3s, create one
+      setTimeout(async () => {
+        if (rtc.connectionState !== 'connected' && rtc.connectionState !== 'connecting') {
+          rtc.createOffer(folder.id, 'peer_main');
+        }
+      }, 3000);
+
+      setupSignaling();
+      setWebrtc(rtc);
+    }
+
+    return () => {
+      unsubscribeSignaling();
+      if (webrtc) {
+        webrtc.close();
+        setWebrtc(null);
+      }
+    };
+  }, [folder?.id, folder?.status]);
+
+  const dataUrlToBlob = (dataUrl: string) => {
+    const parts = dataUrl.split(',');
+    const bstr = atob(parts[1]);
+    let n = bstr.length;
+    const u8arr = new Uint8Array(n);
+    while (n--) u8arr[n] = bstr.charCodeAt(n);
+    return new Blob([u8arr]);
+  };
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -160,6 +253,13 @@ export const SharedFolderView: React.FC = () => {
     if (!folder) return;
     setDownloadingId(file.id);
     setError(null);
+
+    // Try P2P first if connected
+    if (p2pState === 'connected' && webrtc) {
+      webrtc.send({ type: 'request_file_folder', fileId: file.id });
+      // We wait for the file_complete message
+      return;
+    }
 
     try {
       let dataUrl = file.fileDataUrl;
@@ -311,10 +411,10 @@ export const SharedFolderView: React.FC = () => {
                 <span>Scade tra: <span className="text-indigo-400 font-mono font-bold">{timeLeft}</span></span>
               </div>
               <div className="w-1 h-1 rounded-full bg-slate-700"></div>
-              <div className="flex items-center gap-1.5 text-emerald-400 text-[10px] font-black uppercase tracking-wider">
-                <div className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></div>
-                Spazio Collaborativo
-              </div>
+            <div className={`flex items-center gap-1.5 text-[10px] font-black uppercase tracking-wider ${p2pState === 'connected' ? 'text-emerald-400' : 'text-amber-400'}`}>
+              {p2pState === 'connected' ? <Wifi className="w-3 h-3" /> : <WifiOff className="w-3 h-3" />}
+              <span>{p2pState === 'connected' ? 'P2P Attivo' : 'P2P Offline'}</span>
+            </div>
             </div>
           </div>
         </div>
@@ -422,9 +522,16 @@ export const SharedFolderView: React.FC = () => {
                     <button
                       onClick={() => handleDownload(file)}
                       disabled={downloadingId === file.id}
-                      className="p-2 text-indigo-600 hover:bg-indigo-50 rounded-lg transition-colors disabled:opacity-50"
+                      className="p-2 text-indigo-600 hover:bg-indigo-50 rounded-lg transition-colors disabled:opacity-50 flex items-center gap-1"
                     >
-                      {downloadingId === file.id ? <Loader2 className="w-5 h-5 animate-spin" /> : <Download className="w-5 h-5" />}
+                      {downloadingId === file.id ? (
+                        <>
+                          <Loader2 className="w-5 h-5 animate-spin" />
+                          {p2pProgress[file.id] !== undefined && (
+                            <span className="text-[10px] font-bold">{p2pProgress[file.id]}%</span>
+                          )}
+                        </>
+                      ) : <Download className="w-5 h-5" />}
                     </button>
                     <button
                       onClick={() => handleDelete(file.id)}

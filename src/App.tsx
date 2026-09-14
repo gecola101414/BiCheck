@@ -1,11 +1,12 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { MinimalHeader, MinimalMode } from './components/MinimalHeader';
 import { MinimalReceiverView } from './components/MinimalReceiverView';
 import { MinimalDonorView } from './components/MinimalDonorView';
 import { QuickDirectTransfer } from './components/QuickDirectTransfer';
 import { MinimalDualSim } from './components/MinimalDualSim';
 import { SharedFolderView } from './components/SharedFolderView';
-import { ShieldCheck, Lock, Trash2, Key } from 'lucide-react';
+import { ShieldCheck, Lock, Trash2, Key, AlertCircle } from 'lucide-react';
+import { motion, AnimatePresence } from 'motion/react';
 
 export default function App() {
   const [mode, setMode] = useState<MinimalMode>(() => {
@@ -13,9 +14,35 @@ export default function App() {
     if (params.has('folder')) return 'shared_folder';
     return 'receiver';
   });
+  const [quotaExceeded, setQuotaExceeded] = useState(false);
+
+  useEffect(() => {
+    const handleQuota = () => {
+      setQuotaExceeded(true);
+    };
+    window.addEventListener('safehandshake_quota_exceeded', handleQuota);
+    return () => window.removeEventListener('safehandshake_quota_exceeded', handleQuota);
+  }, []);
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans selection:bg-emerald-500 selection:text-slate-950 max-w-full overflow-x-hidden">
+      {/* Quota Warning */}
+      <AnimatePresence>
+        {quotaExceeded && (
+          <motion.div 
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: 'auto', opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            className="bg-amber-500/20 border-b border-amber-500/30 px-4 py-2 text-center overflow-hidden"
+          >
+            <p className="text-amber-200 text-xs font-bold flex items-center justify-center gap-2">
+              <AlertCircle className="w-4 h-4" />
+              Quota Giornaliera Cloud Esaurita. Il sistema sta usando i server di backup (Velocità ridotta).
+            </p>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
       {/* Header */}
       <MinimalHeader mode={mode} setMode={setMode} />
 

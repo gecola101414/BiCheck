@@ -1,9 +1,10 @@
 import React, { useState, useEffect } from 'react';
-import { Smartphone, Upload, CheckCircle2, Clock, AlertCircle, XCircle, Copy, Check, FileText, Lock, Save, Trash2, ShieldCheck, Sparkles } from 'lucide-react';
+import { Smartphone, Upload, CheckCircle2, Clock, AlertCircle, XCircle, Copy, Check, FileText, Lock, Save, Trash2, ShieldCheck, Sparkles, Wifi, WifiOff } from 'lucide-react';
 import { EphemeralSession } from '../types';
 import { donorLoadRequest, donorAttachFile, donorRevoke, fetchSessionStatus, subscribeToSession } from '../services/apiService';
 import { encryptPayload } from '../lib/crypto';
 import { getVaultFiles, saveFileToVault, deleteFromVault, VaultFile } from '../lib/localVault';
+import { WebRTCService } from '../services/webrtcService';
 
 export const MinimalDonorView: React.FC = () => {
   const [receiverCodeInput, setReceiverCodeInput] = useState('');
@@ -36,6 +37,39 @@ export const MinimalDonorView: React.FC = () => {
   const [isLoading, setIsLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+  const [webrtc, setWebrtc] = useState<WebRTCService | null>(null);
+  const [p2pState, setP2pState] = useState<'disconnected' | 'connecting' | 'connected'>('disconnected');
+  const [transferProgress, setTransferProgress] = useState<number | null>(null);
+
+  // WebRTC Setup
+  useEffect(() => {
+    if (session && session.status === 'pending_receiver_unlock' && !webrtc) {
+      console.log('[WebRTC] Initiating signaling...');
+      const rtc = new WebRTCService();
+      rtc.setConnectionStateChange((state) => {
+        if (state === 'connected') setP2pState('connected');
+        else if (state === 'connecting') setP2pState('connecting');
+        else setP2pState('disconnected');
+      });
+
+      rtc.setOnMessage((msg) => {
+        if (msg.type === 'request_file' && selectedFile) {
+          console.log('[WebRTC] Receiver requested file, sending...');
+          rtc.sendFile(session.id, selectedFile.dataUrl);
+        }
+      });
+
+      rtc.createOffer(session.id, 'donor');
+      setWebrtc(rtc);
+    }
+
+    return () => {
+      if (webrtc && (!session || session.status === 'purged' || session.status === 'revoked')) {
+        webrtc.close();
+        setWebrtc(null);
+      }
+    };
+  }, [session?.id, session?.status]);
 
   // Load frequent vault on mount
   useEffect(() => {
@@ -538,6 +572,22 @@ export const MinimalDonorView: React.FC = () => {
                 <span className="font-mono font-bold text-amber-400 bg-slate-950 px-2.5 py-1 rounded border border-slate-800">
                   {Math.floor(donorTimer / 60)}:{(donorTimer % 60).toString().padStart(2, '0')}
                 </span>
+              </div>
+
+              {/* P2P Status Indicator */}
+              <div className="flex justify-center pt-2">
+                <div className={`flex items-center gap-2 px-4 py-2 rounded-2xl border ${
+                  p2pState === 'connected' 
+                    ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400' 
+                    : p2pState === 'connecting'
+                    ? 'bg-amber-500/10 border-amber-500/30 text-amber-400'
+                    : 'bg-slate-800/50 border-slate-700 text-slate-400'
+                }`}>
+                  {p2pState === 'connected' ? <Wifi className="w-4 h-4" /> : <WifiOff className="w-4 h-4" />}
+                  <span className="text-[11px] font-bold uppercase tracking-tight">
+                    {p2pState === 'connected' ? 'Collegamento P2P Diretto Attivo' : p2pState === 'connecting' ? 'Connessione P2P in corso...' : 'In attesa di collegamento P2P...'}
+                  </span>
+                </div>
               </div>
 
               {/* BIG RED KILL SWITCH */}

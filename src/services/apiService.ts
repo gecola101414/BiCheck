@@ -16,11 +16,23 @@ import {
 const STORAGE_KEY = 'safehandshake_ephemeral_sessions';
 
 let firestoreDisabledUntil = 0;
-const FIRESTORE_TIMEOUT = 8000; // Increased for chunked uploads
+const FIRESTORE_TIMEOUT = 12000; // Increased for very large payloads
+let lastWriteTime = 0;
+const WRITE_THROTTLE_MS = 1000; // Prevent rapid-fire writes
 
-async function wrapFirestore<T>(promise: Promise<T>, fallbackValue: T): Promise<T> {
+async function wrapFirestore<T>(promise: Promise<T>, fallbackValue: T, isWrite = false): Promise<T> {
   if (Date.now() < firestoreDisabledUntil) {
     return fallbackValue;
+  }
+
+  // Throttle writes to prevent burst quota exhaustion
+  if (isWrite) {
+    const now = Date.now();
+    const wait = WRITE_THROTTLE_MS - (now - lastWriteTime);
+    if (wait > 0) {
+      await new Promise(r => setTimeout(r, wait));
+    }
+    lastWriteTime = Date.now();
   }
 
   return new Promise((resolve) => {
@@ -36,9 +48,10 @@ async function wrapFirestore<T>(promise: Promise<T>, fallbackValue: T): Promise<
       })
       .catch((err) => {
         clearTimeout(timeout);
-        if (err.message?.includes('quota') || err.code === 'resource-exhausted') {
-          console.error('[FIRESTORE] Quota exceeded. Disabling Firestore for 5 minutes.');
-          firestoreDisabledUntil = Date.now() + 5 * 60 * 1000;
+        const errMsg = err.message?.toLowerCase() || '';
+        if (errMsg.includes('quota') || errMsg.includes('resource-exhausted') || err.code === 'resource-exhausted') {
+          console.error('[FIRESTORE] Quota exceeded. Disabling Firestore for 15 minutes.');
+          firestoreDisabledUntil = Date.now() + 15 * 60 * 1000;
           window.dispatchEvent(new CustomEvent('safehandshake_quota_exceeded'));
         }
         resolve(fallbackValue);
@@ -47,11 +60,23 @@ async function wrapFirestore<T>(promise: Promise<T>, fallbackValue: T): Promise<
 }
 
 const clientMemoryFileCache = new Map<string, string>();
+const folderFileCache = new Map<string, Map<string, string>>();
 
 export function cacheClientFile(sessionId: string, dataUrl: string) {
   if (sessionId && dataUrl) {
     clientMemoryFileCache.set(sessionId, dataUrl);
   }
+}
+
+export function cacheFolderFile(folderId: string, fileId: string, dataUrl: string) {
+  if (!folderFileCache.has(folderId)) {
+    folderFileCache.set(folderId, new Map());
+  }
+  folderFileCache.get(folderId)!.set(fileId, dataUrl);
+}
+
+export function getFolderCachedFile(folderId: string, fileId: string): string | null {
+  return folderFileCache.get(folderId)?.get(fileId) || null;
 }
 
 export function getClientCachedFile(sessionId: string): string | null {
@@ -158,7 +183,8 @@ export async function purgeFirestoreSession(sessionId: string): Promise<void> {
         await deleteDoc(d.ref).catch(() => {});
       });
     })(),
-    null
+    null,
+    true
   ).catch(() => {});
 }
 
@@ -234,7 +260,7 @@ export async function directUploadFile(
 
   // Sync session metadata to Firestore Cloud DB if available
   const sessionRef = doc(db, 'sessions', session.id);
-  wrapFirestore(setDoc(sessionRef, { ...session, fileDataUrl: '' }), null).catch(() => {});
+  wrapFirestore(setDoc(sessionRef, { ...session, fileDataUrl: '' }), null, true).catch(() => {});
 
   saveOrUpdateLocalSession(session);
   return { session, quickCode };
@@ -385,7 +411,7 @@ export async function requestReceiverCode(message: string): Promise<EphemeralSes
 
   // 2. Write to Firestore Cloud DB
   const sessionRef = doc(db, 'sessions', createdSession.id);
-  await wrapFirestore(setDoc(sessionRef, createdSession), null);
+  await wrapFirestore(setDoc(sessionRef, createdSession), null, true);
 
   // 3. Cache in LocalStorage
   saveOrUpdateLocalSession(createdSession);
@@ -545,12 +571,12 @@ export async function donorAttachFile(
 
       // Handle chunking for large files
       if (isLarge) {
-        const chunkSize = 800000;
+        const chunkSize = 950000;
         const totalChunks = Math.ceil(fileDataUrl.length / chunkSize);
         for (let i = 0; i < totalChunks; i++) {
           const chunk = fileDataUrl.substring(i * chunkSize, (i + 1) * chunkSize);
           const chunkRef = doc(db, 'sessions', sessionId, 'chunks', `chunk_${i}`);
-          await setDoc(chunkRef, { data: chunk, index: i });
+          await wrapFirestore(setDoc(chunkRef, { data: chunk, index: i }), null, true);
         }
       }
 
@@ -634,7 +660,8 @@ export async function receiverUnlock(sessionId: string, donorCode: string): Prom
         if (!unlockedSession) unlockedSession = { ...current, ...updateFields };
       }
     })(),
-    null
+    null,
+    true
   ).catch((err: any) => {
     if (err.message && err.message.includes('Codice donatore errato')) {
       throw err;
@@ -853,7 +880,7 @@ export async function createSharedFolder(): Promise<SharedFolder | null> {
       const folder = data.folder as SharedFolder;
       // Sync to Firestore for real-time
       const folderRef = doc(db, 'folders', folder.id);
-      await wrapFirestore(setDoc(folderRef, folder), null);
+      await wrapFirestore(setDoc(folderRef, folder), null, true);
       return folder;
     }
   } catch (err) {
@@ -862,7 +889,7 @@ export async function createSharedFolder(): Promise<SharedFolder | null> {
 
   // Client-side fallback (Stateless/Serverless)
   const folderRef = doc(db, 'folders', fallbackFolder.id);
-  await wrapFirestore(setDoc(folderRef, fallbackFolder), null);
+  await wrapFirestore(setDoc(folderRef, fallbackFolder), null, true);
   return fallbackFolder;
 }
 
@@ -917,6 +944,7 @@ export async function getSharedFolderById(folderId: string): Promise<SharedFolde
 
 export async function addFileToSharedFolder(folderId: string, file: File, dataUrl: string, donorId: string): Promise<boolean> {
   const fileId = "file_" + Math.random().toString(36).substring(2, 9);
+  cacheFolderFile(folderId, fileId, dataUrl);
   const fileEntry: SharedFile = {
     id: fileId,
     name: file.name,
@@ -944,7 +972,7 @@ export async function addFileToSharedFolder(folderId: string, file: File, dataUr
     if (res.ok && data.success) {
       // Sync to Firestore using the confirmed file list from server
       const folderRef = doc(db, 'folders', folderId);
-      await wrapFirestore(updateDoc(folderRef, { files: data.folder.files }), null);
+      await wrapFirestore(updateDoc(folderRef, { files: data.folder.files }), null, true);
     } else {
       throw new Error(data.error || 'Server rejected upload or size limit hit');
     }
@@ -960,7 +988,7 @@ export async function addFileToSharedFolder(folderId: string, file: File, dataUr
         throw new Error('Limite di 5 file raggiunto.');
       }
       const updatedFiles = [...currentFolder.files, { ...fileEntry, fileDataUrl: dataUrl.length < 800000 ? dataUrl : '' }];
-      const updateRes = await wrapFirestore(updateDoc(folderRef, { files: updatedFiles }), null);
+      const updateRes = await wrapFirestore(updateDoc(folderRef, { files: updatedFiles }), null, true);
       if (updateRes === null && Date.now() < firestoreDisabledUntil) {
         throw new Error('Limite di quota Firebase raggiunto. Impossibile sincronizzare il file.');
       }
@@ -975,12 +1003,12 @@ export async function addFileToSharedFolder(folderId: string, file: File, dataUr
   // Always save chunks for large files using the consistent fileId
   if (dataUrl.length >= 800000) {
     try {
-      const chunkSize = 800000;
+      const chunkSize = 950000;
       const totalChunks = Math.ceil(dataUrl.length / chunkSize);
       for (let i = 0; i < totalChunks; i++) {
         const chunk = dataUrl.substring(i * chunkSize, (i + 1) * chunkSize);
         const chunkRef = doc(db, 'folders', folderId, 'file_chunks', `${fileId}_${i}`);
-        await wrapFirestore(setDoc(chunkRef, { data: chunk, index: i, fileId }), null);
+        await wrapFirestore(setDoc(chunkRef, { data: chunk, index: i, fileId }), null, true);
       }
     } catch (err) {
       console.error('[API] Error saving chunks to Firestore:', err);
@@ -1002,7 +1030,7 @@ export async function removeFileFromSharedFolder(folderId: string, fileId: strin
       if (snap && snap.exists()) {
         const folder = snap.data() as SharedFolder;
         const newFiles = folder.files.filter(f => f.id !== fileId);
-        await wrapFirestore(updateDoc(folderRef, { files: newFiles }), null);
+        await wrapFirestore(updateDoc(folderRef, { files: newFiles }), null, true);
       }
 
       // Delete chunks from Firestore

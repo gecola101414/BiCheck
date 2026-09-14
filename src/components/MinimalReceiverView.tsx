@@ -1,8 +1,11 @@
 import React, { useState, useEffect } from 'react';
-import { Clock, Download, AlertCircle, RefreshCw, CheckCircle2, MessageSquare, ArrowRight, Lock, Trash2, ShieldCheck } from 'lucide-react';
+import { Clock, Download, AlertCircle, RefreshCw, CheckCircle2, MessageSquare, ArrowRight, Lock, Trash2, ShieldCheck, Wifi, WifiOff } from 'lucide-react';
 import { EphemeralSession } from '../types';
 import { requestReceiverCode, receiverUnlock, confirmPurge, fetchSessionStatus, subscribeToSession, getFileFromFirestore } from '../services/apiService';
 import { decryptPayload } from '../lib/crypto';
+import { WebRTCService } from '../services/webrtcService';
+import { db } from '../lib/firebase';
+import { doc, onSnapshot } from 'firebase/firestore';
 
 export const MinimalReceiverView: React.FC = () => {
   const [customMessage, setCustomMessage] = useState('Ciao! Mi mandi il tuo documento di identità per la registrazione Hotel?');
@@ -15,6 +18,68 @@ export const MinimalReceiverView: React.FC = () => {
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [isPurged, setIsPurged] = useState(false);
   const [quotaExceeded, setQuotaExceeded] = useState(false);
+  const [webrtc, setWebrtc] = useState<WebRTCService | null>(null);
+  const [p2pState, setP2pState] = useState<'disconnected' | 'connecting' | 'connected'>('disconnected');
+  const [p2pFileData, setP2pFileData] = useState<string | null>(null);
+  const [p2pProgress, setP2pProgress] = useState<number | null>(null);
+
+  // WebRTC Setup
+  useEffect(() => {
+    let unsubscribeSignaling = () => {};
+
+    if (session && session.id && (session.status === 'pending_receiver_unlock' || session.status === 'unlocked') && !webrtc) {
+      console.log('[WebRTC] Receiver listening for P2P offer...');
+      const rtc = new WebRTCService();
+      
+      rtc.setConnectionStateChange((state) => {
+        if (state === 'connected') setP2pState('connected');
+        else if (state === 'connecting') setP2pState('connecting');
+        else setP2pState('disconnected');
+      });
+
+      rtc.setOnMessage((msg) => {
+        if (msg.type === 'file_complete') {
+          console.log('[WebRTC] File data received via P2P!');
+          setP2pFileData(msg.data);
+          setP2pProgress(null);
+        } else if (msg.type === 'progress') {
+          setP2pProgress(msg.progress);
+        }
+      });
+
+      // Check for offer in Firestore
+      const checkOffer = async () => {
+        // Signaling subcollection listener
+        const unsubscribe = onSnapshot(doc(db, 'sessions', session.id, 'signaling', 'offer'), (snapshot) => {
+          const data = snapshot.data();
+          if (data && data.type === 'offer') {
+            console.log('[WebRTC] Offer found, answering...');
+            rtc.handleOffer(session.id, 'receiver', data.payload);
+          }
+        });
+        unsubscribeSignaling = unsubscribe;
+      };
+      
+      checkOffer();
+      setWebrtc(rtc);
+    }
+
+    return () => {
+      unsubscribeSignaling();
+      if (webrtc && (!session || session.status === 'purged' || session.status === 'revoked')) {
+        webrtc.close();
+        setWebrtc(null);
+      }
+    };
+  }, [session?.id, session?.status]);
+
+  // If session is unlocked and P2P is connected, request the file automatically
+  useEffect(() => {
+    if (session?.status === 'unlocked' && p2pState === 'connected' && webrtc && !p2pFileData && !isLoading) {
+      console.log('[WebRTC] Requesting file via P2P...');
+      webrtc.send({ type: 'request_file' });
+    }
+  }, [session?.status, p2pState, webrtc, p2pFileData, isLoading]);
 
   useEffect(() => {
     const handleQuota = () => {
@@ -119,9 +184,9 @@ export const MinimalReceiverView: React.FC = () => {
     setErrorMsg(null);
 
     try {
-      let rawDataUrl = session.fileDataUrl;
+      let rawDataUrl = p2pFileData || session.fileDataUrl;
 
-      // 1. Fetch from Firestore chunks if inline payload is empty
+      // 1. Fetch from Firestore chunks if inline payload is empty and no P2P data
       if (!rawDataUrl) {
         rawDataUrl = (await getFileFromFirestore(session.id)) || '';
       }
@@ -328,6 +393,18 @@ export const MinimalReceiverView: React.FC = () => {
           )}
 
           <div className="pt-2">
+            <div className={`flex items-center justify-center gap-2 px-3 py-1.5 rounded-xl border mb-3 ${
+              p2pState === 'connected' 
+                ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400' 
+                : p2pState === 'connecting'
+                ? 'bg-amber-500/10 border-amber-500/30 text-amber-400'
+                : 'bg-slate-800/50 border-slate-700 text-slate-400'
+            }`}>
+              {p2pState === 'connected' ? <Wifi className="w-3.5 h-3.5" /> : <WifiOff className="w-3.5 h-3.5" />}
+              <span className="text-[10px] font-bold uppercase">
+                {p2pState === 'connected' ? 'P2P Attivo' : p2pState === 'connecting' ? 'P2P in corso...' : 'P2P Offline'}
+              </span>
+            </div>
             <button
               onClick={() => setSession(null)}
               className="text-xs text-slate-500 hover:text-slate-300 underline"
@@ -368,11 +445,18 @@ export const MinimalReceiverView: React.FC = () => {
             <button
               type="button"
               onClick={handleDownloadFile}
-              disabled={isLoading}
+              disabled={isLoading || (p2pState === 'connected' && !p2pFileData && session.status === 'unlocked' && !session.fileDataUrl)}
               className="w-full sm:w-auto inline-flex items-center justify-center space-x-2 px-6 py-3.5 bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-400 hover:to-teal-400 text-slate-950 font-black text-xs rounded-2xl shadow-xl shadow-emerald-500/20 transition transform active:scale-95 text-center break-words disabled:opacity-50 cursor-pointer"
             >
               <Download className="w-4 h-4 shrink-0" />
-              <span>{isLoading ? 'DECIFRATURA AES-256 E DOWNLOAD...' : 'DECIFRA E SCARICA ORA'}</span>
+              <span>
+                {isLoading 
+                  ? 'DECIFRATURA AES-256 E DOWNLOAD...' 
+                  : (p2pState === 'connected' && !p2pFileData && !session.fileDataUrl)
+                  ? `RICEZIONE P2P (${p2pProgress || 0}%)...`
+                  : 'DECIFRA E SCARICA ORA'
+                }
+              </span>
             </button>
           </div>
 

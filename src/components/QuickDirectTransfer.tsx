@@ -13,10 +13,15 @@ import {
   Building2,
   ShieldAlert,
   Sparkles,
-  RefreshCw
+  RefreshCw,
+  Wifi,
+  WifiOff
 } from 'lucide-react';
 import { directUploadFile, directLookupCode, confirmPurge, donorRevoke, dataUrlToBlob, getFileFromFirestore } from '../services/apiService';
 import { EphemeralSession } from '../types';
+import { WebRTCService } from '../services/webrtcService';
+import { db } from '../lib/firebase';
+import { doc, onSnapshot, collection } from 'firebase/firestore';
 
 export const QuickDirectTransfer: React.FC = () => {
   const [activeTab, setActiveTab] = useState<'send' | 'receive'>('send');
@@ -36,6 +41,8 @@ export const QuickDirectTransfer: React.FC = () => {
   const [copiedCode, setCopiedCode] = useState(false);
   const [sendError, setSendError] = useState<string | null>(null);
   const [sendTimer, setSendTimer] = useState<number>(180);
+  const [sendP2pState, setSendP2pState] = useState<'disconnected' | 'connecting' | 'connected'>('disconnected');
+  const [sendWebrtc, setSendWebrtc] = useState<WebRTCService | null>(null);
 
   // --- RECEIVE STATE ---
   const [inputQuickCode, setInputQuickCode] = useState('');
@@ -45,6 +52,91 @@ export const QuickDirectTransfer: React.FC = () => {
   const [downloadSuccess, setDownloadSuccess] = useState(false);
   const [receiveError, setReceiveError] = useState<string | null>(null);
   const [receiveTimer, setReceiveTimer] = useState<number>(180);
+  const [receiveP2pState, setReceiveP2pState] = useState<'disconnected' | 'connecting' | 'connected'>('disconnected');
+  const [receiveWebrtc, setReceiveWebrtc] = useState<WebRTCService | null>(null);
+  const [p2pFileData, setP2pFileData] = useState<string | null>(null);
+  const [p2pProgress, setP2pProgress] = useState<number | null>(null);
+
+  // Send P2P Signaling
+  React.useEffect(() => {
+    if (uploadedSession && !sendWebrtc) {
+      const rtc = new WebRTCService();
+      rtc.setConnectionStateChange((state) => {
+        if (state === 'connected') setSendP2pState('connected');
+        else if (state === 'connecting') setSendP2pState('connecting');
+        else setSendP2pState('disconnected');
+      });
+
+      rtc.setOnMessage((msg) => {
+        if (msg.type === 'request_file' && selectedFile) {
+          // Need to read the file again or use cached dataUrl
+          const reader = new FileReader();
+          reader.onload = (e) => {
+            const dataUrl = e.target?.result as string;
+            rtc.sendFile(uploadedSession.id, dataUrl);
+          };
+          reader.readAsDataURL(selectedFile.file);
+        }
+      });
+
+      rtc.createOffer(uploadedSession.id, 'donor');
+      setSendWebrtc(rtc);
+    }
+
+    return () => {
+      if (sendWebrtc && !uploadedSession) {
+        sendWebrtc.close();
+        setSendWebrtc(null);
+      }
+    };
+  }, [uploadedSession?.id, sendWebrtc, selectedFile]);
+
+  // Receive P2P Signaling
+  React.useEffect(() => {
+    let unsubscribeSignaling = () => {};
+
+    if (foundSession && !receiveWebrtc && !downloadSuccess) {
+      const rtc = new WebRTCService();
+      rtc.setConnectionStateChange((state) => {
+        if (state === 'connected') setReceiveP2pState('connected');
+        else if (state === 'connecting') setReceiveP2pState('connecting');
+        else setReceiveP2pState('disconnected');
+      });
+
+      rtc.setOnMessage((msg) => {
+        if (msg.type === 'file_complete') {
+          setP2pFileData(msg.data);
+          setP2pProgress(null);
+        } else if (msg.type === 'progress') {
+          setP2pProgress(msg.progress);
+        }
+      });
+
+      const unsubscribe = onSnapshot(doc(db, 'sessions', foundSession.id, 'signaling', 'offer'), (snapshot) => {
+        const data = snapshot.data();
+        if (data && data.type === 'offer') {
+          rtc.handleOffer(foundSession.id, 'receiver', data.payload);
+        }
+      });
+      unsubscribeSignaling = unsubscribe;
+      setReceiveWebrtc(rtc);
+    }
+
+    return () => {
+      unsubscribeSignaling();
+      if (receiveWebrtc && (!foundSession || downloadSuccess)) {
+        receiveWebrtc.close();
+        setReceiveWebrtc(null);
+      }
+    };
+  }, [foundSession?.id, receiveWebrtc, downloadSuccess]);
+
+  // Request file via P2P once connected
+  React.useEffect(() => {
+    if (receiveP2pState === 'connected' && receiveWebrtc && !p2pFileData && foundSession && !isDownloading) {
+      receiveWebrtc.send({ type: 'request_file' });
+    }
+  }, [receiveP2pState, receiveWebrtc, p2pFileData, foundSession, isDownloading]);
 
   // Send Timer Countdown Effect
   React.useEffect(() => {
@@ -210,7 +302,7 @@ export const QuickDirectTransfer: React.FC = () => {
     setReceiveError(null);
 
     try {
-      let dataUrl = foundSession.fileDataUrl;
+      let dataUrl = p2pFileData || foundSession.fileDataUrl;
       if (!dataUrl) {
         dataUrl = await getFileFromFirestore(foundSession.id);
       }
@@ -431,10 +523,17 @@ export const QuickDirectTransfer: React.FC = () => {
                     {copiedCode ? <Check className="w-4 h-4 text-emerald-400" /> : <Copy className="w-4 h-4" />}
                   </button>
                 </div>
-                <div className="pt-2 text-center">
+                <div className="pt-2 text-center space-y-2">
                   <span className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-mono font-bold border ${sendTimer > 20 ? 'bg-amber-500/10 text-amber-300 border-amber-500/30' : 'bg-red-500/20 text-red-300 border-red-500/40 animate-pulse'}`}>
                     ⏱️ Scadenza Codice: {Math.floor(sendTimer / 60)}m {sendTimer % 60}s (3 min max)
                   </span>
+                  
+                  <div className={`flex items-center justify-center gap-2 text-[10px] font-bold uppercase tracking-wider ${
+                    sendP2pState === 'connected' ? 'text-emerald-400' : 'text-slate-500'
+                  }`}>
+                    {sendP2pState === 'connected' ? <Wifi className="w-3.5 h-3.5" /> : <WifiOff className="w-3.5 h-3.5" />}
+                    <span>{sendP2pState === 'connected' ? 'Collegamento P2P Attivo' : 'In attesa di collegamento diretto...'}</span>
+                  </div>
                 </div>
               </div>
 
@@ -569,13 +668,18 @@ export const QuickDirectTransfer: React.FC = () => {
               <button
                 type="button"
                 onClick={handleDownloadDirectFile}
-                disabled={isDownloading}
+                disabled={isDownloading || (receiveP2pState === 'connected' && !p2pFileData && !foundSession.fileDataUrl)}
                 className="w-full py-3.5 px-4 bg-gradient-to-r from-cyan-500 to-teal-400 hover:from-cyan-400 hover:to-teal-300 text-slate-950 font-black rounded-2xl text-sm flex items-center justify-center space-x-2 transition transform active:scale-95 shadow-lg shadow-cyan-500/20 disabled:opacity-50"
               >
                 {isDownloading ? (
                   <>
                     <RefreshCw className="w-4 h-4 animate-spin" />
                     <span>Download ed Eliminazione in corso...</span>
+                  </>
+                ) : (receiveP2pState === 'connected' && !p2pFileData && !foundSession.fileDataUrl) ? (
+                  <>
+                    <Wifi className="w-4 h-4 animate-pulse" />
+                    <span>RICEZIONE P2P ({p2pProgress || 0}%)...</span>
                   </>
                 ) : (
                   <>
