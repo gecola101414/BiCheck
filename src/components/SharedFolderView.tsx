@@ -166,14 +166,18 @@ export const SharedFolderView: React.FC = () => {
               value={inputCode}
               onChange={(e) => setInputCode(e.target.value.replace(/\D/g, ''))}
               placeholder="Codice 4 cifre"
-              className="flex-grow p-4 bg-slate-50 border-2 border-slate-100 rounded-2xl text-center text-xl font-mono focus:border-indigo-500 focus:outline-none transition-all"
+              className="flex-grow p-4 bg-slate-50 border-2 border-slate-200 rounded-2xl text-center text-xl font-mono font-bold text-slate-900 placeholder:text-slate-300 focus:border-indigo-500 focus:ring-4 focus:ring-indigo-500/10 focus:outline-none transition-all"
             />
             <button
               onClick={handleJoin}
               disabled={loading || inputCode.length !== 4}
-              className="px-6 bg-slate-900 text-white font-bold rounded-2xl hover:bg-slate-800 transition-all active:scale-[0.98] disabled:opacity-50"
+              className={`px-6 font-bold rounded-2xl transition-all active:scale-[0.98] disabled:opacity-50 ${
+                inputCode.length === 4 
+                  ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-200' 
+                  : 'bg-slate-900 text-white'
+              }`}
             >
-              Entra
+              {loading ? <Loader2 className="w-5 h-5 animate-spin" /> : 'Entra'}
             </button>
           </div>
 
@@ -206,9 +210,16 @@ export const SharedFolderView: React.FC = () => {
           </div>
           <div>
             <h3 className="font-bold text-lg">Cartella Condivisa</h3>
-            <div className="flex items-center gap-2 text-slate-400 text-sm">
-              <Clock className="w-3.5 h-3.5" />
-              <span>Scade tra: <span className="text-indigo-400 font-mono font-bold">{timeLeft}</span></span>
+            <div className="flex items-center gap-3">
+              <div className="flex items-center gap-1.5 text-slate-400 text-sm">
+                <Clock className="w-3.5 h-3.5" />
+                <span>Scade tra: <span className="text-indigo-400 font-mono font-bold">{timeLeft}</span></span>
+              </div>
+              <div className="w-1 h-1 rounded-full bg-slate-700"></div>
+              <div className="flex items-center gap-1.5 text-emerald-400 text-[10px] font-black uppercase tracking-wider">
+                <div className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></div>
+                Spazio Collaborativo
+              </div>
             </div>
           </div>
         </div>
