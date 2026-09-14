@@ -37,9 +37,29 @@ function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
 
+// Get config from environment variables (Vercel) or local file (AI Studio)
+const getFirebaseConfig = () => {
+  // Try environment variables first (prefixed with VITE_ for client-side access)
+  if (import.meta.env.VITE_FIREBASE_API_KEY) {
+    return {
+      apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
+      authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN,
+      projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID,
+      storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET,
+      messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID,
+      appId: import.meta.env.VITE_FIREBASE_APP_ID,
+      firestoreDatabaseId: import.meta.env.VITE_FIREBASE_DATABASE_ID
+    };
+  }
+  // Fallback to local config file
+  return firebaseConfig;
+};
+
+const finalConfig = getFirebaseConfig();
+
 // Initialize Firebase
-const app = initializeApp(firebaseConfig);
-const db = getFirestore(app, (firebaseConfig as any).firestoreDatabaseId);
+const app = initializeApp(finalConfig);
+const db = getFirestore(app, (finalConfig as any).firestoreDatabaseId || '(default)');
 
 enum OperationType {
   CREATE = 'create',
