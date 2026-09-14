@@ -335,10 +335,9 @@ export async function requestReceiverCode(message: string): Promise<EphemeralSes
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ message: cleanMessage })
     });
-    const contentType = res.headers.get('content-type') || '';
-    if (contentType.includes('application/json')) {
+    if (res.ok) {
       const data = await res.json();
-      if (res.ok && data.success && data.session) {
+      if (data.success && data.session) {
         createdSession = data.session;
       }
     }
@@ -346,7 +345,7 @@ export async function requestReceiverCode(message: string): Promise<EphemeralSes
     console.warn('[API] Express server call failed:', err);
   }
 
-  // Fallback generation if server didn't respond
+  // Fallback generation (Serverless-ready)
   if (!createdSession) {
     const now = Date.now();
     const receiverCode = generate4DigitCode();
@@ -364,7 +363,7 @@ export async function requestReceiverCode(message: string): Promise<EphemeralSes
 
   // 2. Write to Firestore Cloud DB
   const sessionRef = doc(db, 'sessions', createdSession.id);
-  wrapFirestore(setDoc(sessionRef, createdSession), null).catch(() => {});
+  await wrapFirestore(setDoc(sessionRef, createdSession), null);
 
   // 3. Cache in LocalStorage
   saveOrUpdateLocalSession(createdSession);
@@ -475,10 +474,9 @@ export async function donorAttachFile(
         donorCode: donorCodeInput
       })
     });
-    const contentType = res.headers.get('content-type') || '';
-    if (contentType.includes('application/json')) {
+    if (res.ok) {
       const data = await res.json();
-      if (res.ok && data.success && data.session && data.donorCode) {
+      if (data.success && data.session && data.donorCode) {
         updatedSession = data.session;
         donorCode = data.donorCode;
       }
@@ -503,15 +501,21 @@ export async function donorAttachFile(
     status: 'pending_receiver_unlock' as const
   };
 
-  // 2. Sync session metadata to Firestore Cloud DB if available
+  // 2. Sync session metadata to Firestore Cloud DB
   const sessionRef = doc(db, 'sessions', sessionId);
-  wrapFirestore(
+  await wrapFirestore(
     (async () => {
+      // In stateless/serverless mode, we must include the file data in Firestore
+      // as there is no persistent disk store.
       await updateDoc(sessionRef, {
         ...updateFields,
-        fileDataUrl: ''
+        fileDataUrl: fileDataUrl.length < 900000 ? fileDataUrl : '' 
       }).catch(async () => {
-        await setDoc(sessionRef, { ...updateFields, id: sessionId, fileDataUrl: '' }, { merge: true }).catch(() => {});
+        await setDoc(sessionRef, { 
+          ...updateFields, 
+          id: sessionId, 
+          fileDataUrl: fileDataUrl.length < 900000 ? fileDataUrl : '' 
+        }, { merge: true }).catch(() => {});
       });
       const snap = await getDoc(sessionRef).catch(() => null);
       if (snap && snap.exists()) {
@@ -520,7 +524,7 @@ export async function donorAttachFile(
       }
     })(),
     null
-  ).catch(() => {});
+  );
 
   if (updatedSession) {
     updatedSession.fileDataUrl = fileDataUrl;
@@ -790,6 +794,18 @@ export function subscribeToSession(sessionId: string, callback: (session: Epheme
 // ==================== SHARED FOLDER SERVICE ====================
 
 export async function createSharedFolder(): Promise<SharedFolder | null> {
+  const now = Date.now();
+  const id = "fol_" + Math.random().toString(36).substring(2, 9);
+  const code = generate4DigitCode();
+  const fallbackFolder: SharedFolder = {
+    id,
+    code,
+    createdAt: now,
+    expiresAt: now + 10 * 60 * 1000,
+    files: [],
+    status: 'active'
+  };
+
   try {
     const res = await fetch('/api/folder/create', { method: 'POST' });
     const data = await res.json();
@@ -801,9 +817,13 @@ export async function createSharedFolder(): Promise<SharedFolder | null> {
       return folder;
     }
   } catch (err) {
-    console.error('[API] Folder create error:', err);
+    console.warn('[API] Folder server create failed, using client fallback:', err);
   }
-  return null;
+
+  // Client-side fallback (Stateless/Serverless)
+  const folderRef = doc(db, 'folders', fallbackFolder.id);
+  await wrapFirestore(setDoc(folderRef, fallbackFolder), null);
+  return fallbackFolder;
 }
 
 export async function joinSharedFolder(code: string): Promise<SharedFolder | null> {
@@ -838,6 +858,16 @@ export async function joinSharedFolder(code: string): Promise<SharedFolder | nul
 }
 
 export async function addFileToSharedFolder(folderId: string, file: File, dataUrl: string, donorId: string): Promise<boolean> {
+  const fileId = "file_" + Math.random().toString(36).substring(2, 9);
+  const fileEntry: SharedFile = {
+    id: fileId,
+    name: file.name,
+    size: file.size,
+    type: file.type,
+    uploadedAt: Date.now(),
+    donorId
+  };
+
   try {
     const res = await fetch(`/api/folder/${folderId}/upload`, {
       method: 'POST',
@@ -850,15 +880,33 @@ export async function addFileToSharedFolder(folderId: string, file: File, dataUr
         donorId
       })
     });
-    const data = await res.json();
-    if (data.success) {
-      // Update Firestore to notify others
-      const folderRef = doc(db, 'folders', folderId);
-      await wrapFirestore(updateDoc(folderRef, { files: data.folder.files }), null);
+    if (res.ok) {
+      const data = await res.json();
+      if (data.success) {
+        // Update Firestore to notify others
+        const folderRef = doc(db, 'folders', folderId);
+        await wrapFirestore(updateDoc(folderRef, { files: data.folder.files }), null);
+        return true;
+      }
+    }
+  } catch (err) {
+    console.warn('[API] Folder server upload failed, using direct cloud sync:', err);
+  }
+
+  // Client-side fallback (Cloud-Native)
+  try {
+    const folderRef = doc(db, 'folders', folderId);
+    const snap = await wrapFirestore(getDoc(folderRef), null);
+    if (snap && snap.exists()) {
+      const currentFolder = snap.data() as SharedFolder;
+      if (currentFolder.files.length >= 5) return false;
+
+      const updatedFiles = [...currentFolder.files, { ...fileEntry, fileDataUrl: dataUrl }];
+      await wrapFirestore(updateDoc(folderRef, { files: updatedFiles }), null);
       return true;
     }
   } catch (err) {
-    console.error('[API] Folder upload error:', err);
+    console.error('[API] Direct cloud upload error:', err);
   }
   return false;
 }
