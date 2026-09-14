@@ -20,7 +20,8 @@ import {
   joinSharedFolder, 
   addFileToSharedFolder, 
   removeFileFromSharedFolder, 
-  subscribeToSharedFolder 
+  subscribeToSharedFolder,
+  fetchFileChunks
 } from '../services/apiService';
 
 export const SharedFolderView: React.FC = () => {
@@ -29,6 +30,7 @@ export const SharedFolderView: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [inputCode, setInputCode] = useState('');
   const [uploading, setUploading] = useState(false);
+  const [downloadingId, setDownloadingId] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const [timeLeft, setTimeLeft] = useState<string>('');
   
@@ -115,6 +117,54 @@ export const SharedFolderView: React.FC = () => {
   const handleDelete = async (fileId: string) => {
     if (!folder) return;
     await removeFileFromSharedFolder(folder.id, fileId);
+  };
+
+  const handleDownload = async (file: SharedFile) => {
+    if (!folder) return;
+    setDownloadingId(file.id);
+    setError(null);
+
+    try {
+      let dataUrl = file.fileDataUrl;
+
+      // Se il dataUrl è vuoto, tentiamo di recuperare i chunk da Firestore
+      if (!dataUrl) {
+        dataUrl = await fetchFileChunks(folder.id, file.id);
+      }
+
+      if (dataUrl) {
+        const parts = dataUrl.split(',');
+        const mime = parts[0].match(/:(.*?);/)?.[1] || file.type || 'application/octet-stream';
+        const bstr = atob(parts[1]);
+        let n = bstr.length;
+        const u8arr = new Uint8Array(n);
+        while (n--) {
+          u8arr[n] = bstr.charCodeAt(n);
+        }
+        const blob = new Blob([u8arr], { type: mime });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = file.name;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        setTimeout(() => URL.revokeObjectURL(url), 2000);
+        setDownloadingId(null);
+        return;
+      }
+    } catch (e) {
+      console.error('Error creating blob for download:', e);
+    }
+    
+    // Fallback to server download
+    const link = document.createElement('a');
+    link.href = `/api/folder/${folder?.id}/file/${file.id}`;
+    link.download = file.name;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    setDownloadingId(null);
   };
 
   const copyCode = () => {
@@ -303,13 +353,13 @@ export const SharedFolderView: React.FC = () => {
                     </div>
                   </div>
                   <div className="flex items-center gap-2">
-                    <a
-                      href={`/api/folder/${folder.id}/file/${file.id}`}
-                      download={file.name}
-                      className="p-2 text-indigo-600 hover:bg-indigo-50 rounded-lg transition-colors"
+                    <button
+                      onClick={() => handleDownload(file)}
+                      disabled={downloadingId === file.id}
+                      className="p-2 text-indigo-600 hover:bg-indigo-50 rounded-lg transition-colors disabled:opacity-50"
                     >
-                      <Download className="w-5 h-5" />
-                    </a>
+                      {downloadingId === file.id ? <Loader2 className="w-5 h-5 animate-spin" /> : <Download className="w-5 h-5" />}
+                    </button>
                     <button
                       onClick={() => handleDelete(file.id)}
                       className="p-2 text-red-400 hover:bg-red-50 hover:text-red-600 rounded-lg transition-colors"

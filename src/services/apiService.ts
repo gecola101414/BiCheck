@@ -120,6 +120,17 @@ export async function getFileFromFirestore(sessionId: string): Promise<string | 
           cacheClientFile(sessionId, data.fileDataUrl);
           return data.fileDataUrl;
         }
+        
+        // Try fetching chunks if inline data is missing
+        const chunksRef = collection(db, 'sessions', sessionId, 'chunks');
+        const chunkSnap = await getDocs(chunksRef);
+        if (!chunkSnap.empty) {
+          const chunks = chunkSnap.docs.map(d => d.data() as { data: string, index: number });
+          chunks.sort((a, b) => a.index - b.index);
+          const fullData = chunks.map(c => c.data).join('');
+          cacheClientFile(sessionId, fullData);
+          return fullData;
+        }
       }
       return null;
     })(),
@@ -138,6 +149,13 @@ export async function purgeFirestoreSession(sessionId: string): Promise<void> {
         fileDataUrl: '',
         fileUrl: ''
       }).catch(() => {});
+      
+      // Delete chunks
+      const chunksRef = collection(db, 'sessions', sessionId, 'chunks');
+      const chunkSnap = await getDocs(chunksRef);
+      chunkSnap.forEach(async (d) => {
+        await deleteDoc(d.ref).catch(() => {});
+      });
     })(),
     null
   ).catch(() => {});
@@ -507,16 +525,31 @@ export async function donorAttachFile(
     (async () => {
       // In stateless/serverless mode, we must include the file data in Firestore
       // as there is no persistent disk store.
+      const isLarge = fileDataUrl.length >= 800000;
+      const safeDataUrl = isLarge ? '' : fileDataUrl;
+
       await updateDoc(sessionRef, {
         ...updateFields,
-        fileDataUrl: fileDataUrl.length < 900000 ? fileDataUrl : '' 
+        fileDataUrl: safeDataUrl 
       }).catch(async () => {
         await setDoc(sessionRef, { 
           ...updateFields, 
           id: sessionId, 
-          fileDataUrl: fileDataUrl.length < 900000 ? fileDataUrl : '' 
+          fileDataUrl: safeDataUrl 
         }, { merge: true }).catch(() => {});
       });
+
+      // Handle chunking for large files
+      if (isLarge) {
+        const chunkSize = 800000;
+        const totalChunks = Math.ceil(fileDataUrl.length / chunkSize);
+        for (let i = 0; i < totalChunks; i++) {
+          const chunk = fileDataUrl.substring(i * chunkSize, (i + 1) * chunkSize);
+          const chunkRef = doc(db, 'sessions', sessionId, 'chunks', `chunk_${i}`);
+          await setDoc(chunkRef, { data: chunk, index: i });
+        }
+      }
+
       const snap = await getDoc(sessionRef).catch(() => null);
       if (snap && snap.exists()) {
         const fsSession = snap.data() as EphemeralSession;
@@ -901,8 +934,21 @@ export async function addFileToSharedFolder(folderId: string, file: File, dataUr
       const currentFolder = snap.data() as SharedFolder;
       if (currentFolder.files.length >= 5) return false;
 
-      const updatedFiles = [...currentFolder.files, { ...fileEntry, fileDataUrl: dataUrl }];
+      // Limit Firestore inline data to ~800KB to stay safe under 1MB doc limit
+      const safeDataUrl = dataUrl.length < 800000 ? dataUrl : '';
+      const updatedFiles = [...currentFolder.files, { ...fileEntry, fileDataUrl: safeDataUrl }];
       await wrapFirestore(updateDoc(folderRef, { files: updatedFiles }), null);
+      
+      // If file was too large, store in chunks
+      if (dataUrl.length >= 800000) {
+        const chunkSize = 800000;
+        const totalChunks = Math.ceil(dataUrl.length / chunkSize);
+        for (let i = 0; i < totalChunks; i++) {
+          const chunk = dataUrl.substring(i * chunkSize, (i + 1) * chunkSize);
+          const chunkRef = doc(db, 'folders', folderId, 'file_chunks', `${fileId}_${i}`);
+          await wrapFirestore(setDoc(chunkRef, { data: chunk, index: i, fileId }), null);
+        }
+      }
       return true;
     }
   } catch (err) {
@@ -924,12 +970,37 @@ export async function removeFileFromSharedFolder(folderId: string, fileId: strin
         const newFiles = folder.files.filter(f => f.id !== fileId);
         await wrapFirestore(updateDoc(folderRef, { files: newFiles }), null);
       }
+
+      // Delete chunks from Firestore
+      const chunksRef = collection(db, 'folders', folderId, 'file_chunks');
+      const q = query(chunksRef, where('fileId', '==', fileId));
+      const chunkSnap = await getDocs(q);
+      chunkSnap.forEach(async (d) => {
+        await deleteDoc(d.ref).catch(() => {});
+      });
+
       return true;
     }
   } catch (err) {
     // ignore
   }
   return false;
+}
+
+export async function fetchFileChunks(folderId: string, fileId: string): Promise<string | null> {
+  return wrapFirestore(
+    (async () => {
+      const chunksRef = collection(db, 'folders', folderId, 'file_chunks');
+      const q = query(chunksRef, where('fileId', '==', fileId));
+      const snap = await getDocs(q);
+      if (snap.empty) return null;
+
+      const chunks = snap.docs.map(d => d.data() as { data: string, index: number });
+      chunks.sort((a, b) => a.index - b.index);
+      return chunks.map(c => c.data).join('');
+    })(),
+    null
+  );
 }
 
 export function subscribeToSharedFolder(folderId: string, callback: (folder: SharedFolder) => void) {
