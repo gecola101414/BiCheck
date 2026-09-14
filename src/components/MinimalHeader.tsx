@@ -1,7 +1,7 @@
 import React from 'react';
-import { Smartphone, Monitor, Layers, Shield, Lock, Zap } from 'lucide-react';
+import { Smartphone, Monitor, Layers, Shield, Lock, Zap, FolderSync } from 'lucide-react';
 
-export type MinimalMode = 'receiver' | 'donor' | 'quick_direct' | 'dual_sim';
+export type MinimalMode = 'receiver' | 'donor' | 'quick_direct' | 'dual_sim' | 'shared_folder';
 
 interface MinimalHeaderProps {
   mode: MinimalMode;
@@ -41,7 +41,7 @@ export const MinimalHeader: React.FC<MinimalHeaderProps> = ({ mode, setMode }) =
         </div>
 
         {/* Mode Selector */}
-        <nav className="w-full sm:w-auto flex items-center justify-center bg-slate-950 p-1 rounded-2xl border border-slate-800 text-xs font-semibold">
+        <nav className="w-full sm:w-auto flex items-center justify-center bg-slate-950 p-1 rounded-2xl border border-slate-800 text-xs font-semibold overflow-x-auto whitespace-nowrap scrollbar-hide">
           <button
             onClick={() => setMode('receiver')}
             className={`flex-1 sm:flex-initial flex items-center justify-center space-x-1.5 px-3 py-2 rounded-xl transition ${
@@ -76,6 +76,18 @@ export const MinimalHeader: React.FC<MinimalHeaderProps> = ({ mode, setMode }) =
           >
             <Zap className="w-3.5 h-3.5 shrink-0 fill-current" />
             <span className="text-xs">Invio Veloce</span>
+          </button>
+
+          <button
+            onClick={() => setMode('shared_folder')}
+            className={`flex-1 sm:flex-initial flex items-center justify-center space-x-1.5 px-3 py-2 rounded-xl transition ${
+              mode === 'shared_folder'
+                ? 'bg-indigo-500 text-white shadow-sm font-bold'
+                : 'text-slate-400 hover:text-slate-200'
+            }`}
+          >
+            <FolderSync className="w-3.5 h-3.5 shrink-0" />
+            <span className="text-xs">Cartella</span>
           </button>
 
           <button

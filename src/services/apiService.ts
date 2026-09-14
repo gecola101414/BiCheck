@@ -1,4 +1,4 @@
-import { EphemeralSession } from '../types';
+import { EphemeralSession, SharedFolder, SharedFile } from '../types';
 import { db } from '../lib/firebase';
 import { 
   collection, 
@@ -14,6 +14,36 @@ import {
 } from 'firebase/firestore';
 
 const STORAGE_KEY = 'safehandshake_ephemeral_sessions';
+
+let firestoreDisabledUntil = 0;
+const FIRESTORE_TIMEOUT = 2500;
+
+async function wrapFirestore<T>(promise: Promise<T>, fallbackValue: T): Promise<T> {
+  if (Date.now() < firestoreDisabledUntil) {
+    return fallbackValue;
+  }
+
+  return new Promise((resolve) => {
+    const timeout = setTimeout(() => {
+      console.warn('[FIRESTORE] Operation timed out, using fallback.');
+      resolve(fallbackValue);
+    }, FIRESTORE_TIMEOUT);
+
+    promise
+      .then((val) => {
+        clearTimeout(timeout);
+        resolve(val);
+      })
+      .catch((err) => {
+        clearTimeout(timeout);
+        if (err.message?.includes('quota') || err.code === 'resource-exhausted') {
+          console.error('[FIRESTORE] Quota exceeded. Disabling Firestore for 5 minutes.');
+          firestoreDisabledUntil = Date.now() + 5 * 60 * 1000;
+        }
+        resolve(fallbackValue);
+      });
+  });
+}
 
 const clientMemoryFileCache = new Map<string, string>();
 
@@ -79,36 +109,38 @@ export async function getFileFromFirestore(sessionId: string): Promise<string | 
   const cached = getClientCachedFile(sessionId);
   if (cached) return cached;
 
-  try {
-    const sessionRef = doc(db, 'sessions', sessionId);
-    const snap = await getDoc(sessionRef);
+  return wrapFirestore(
+    (async () => {
+      const sessionRef = doc(db, 'sessions', sessionId);
+      const snap = await getDoc(sessionRef);
 
-    if (snap.exists()) {
-      const data = snap.data();
-      if (data.fileDataUrl && data.fileDataUrl.length > 50) {
-        cacheClientFile(sessionId, data.fileDataUrl);
-        return data.fileDataUrl;
+      if (snap.exists()) {
+        const data = snap.data();
+        if (data.fileDataUrl && data.fileDataUrl.length > 50) {
+          cacheClientFile(sessionId, data.fileDataUrl);
+          return data.fileDataUrl;
+        }
       }
-    }
-  } catch (err) {
-    // Gracefully handle quota limit or network issues
-  }
-  return null;
+      return null;
+    })(),
+    null
+  );
 }
 
 export async function purgeFirestoreSession(sessionId: string): Promise<void> {
   clearClientCachedFile(sessionId);
-  try {
-    const sessionRef = doc(db, 'sessions', sessionId);
-    await updateDoc(sessionRef, {
-      status: 'purged',
-      purgedAt: Date.now(),
-      fileDataUrl: '',
-      fileUrl: ''
-    }).catch(() => {});
-  } catch (err) {
-    // ignore quota / network warnings
-  }
+  wrapFirestore(
+    (async () => {
+      const sessionRef = doc(db, 'sessions', sessionId);
+      await updateDoc(sessionRef, {
+        status: 'purged',
+        purgedAt: Date.now(),
+        fileDataUrl: '',
+        fileUrl: ''
+      }).catch(() => {});
+    })(),
+    null
+  ).catch(() => {});
 }
 
 export async function uploadRawBlob(sessionId: string, blob: Blob | ArrayBuffer): Promise<boolean> {
@@ -182,12 +214,8 @@ export async function directUploadFile(
   session.fileDataUrl = fileDataUrl;
 
   // Sync session metadata to Firestore Cloud DB if available
-  try {
-    const sessionRef = doc(db, 'sessions', session.id);
-    await setDoc(sessionRef, { ...session, fileDataUrl: '' }).catch(() => {});
-  } catch (e) {
-    // ignore quota/network
-  }
+  const sessionRef = doc(db, 'sessions', session.id);
+  wrapFirestore(setDoc(sessionRef, { ...session, fileDataUrl: '' }), null).catch(() => {});
 
   saveOrUpdateLocalSession(session);
   return { session, quickCode };
@@ -222,31 +250,26 @@ export async function directLookupCode(quickCode: string): Promise<EphemeralSess
   }
 
   // 2. Query Firestore Cloud DB
-  try {
-    const sessionsRef = collection(db, 'sessions');
-    const q = query(sessionsRef, where('quickCode', '==', codeStr));
-    const querySnapshot = await getDocs(q);
+  let sessionFromFS: EphemeralSession | null = null;
+  await wrapFirestore(
+    (async () => {
+      const sessionsRef = collection(db, 'sessions');
+      const q = query(sessionsRef, where('quickCode', '==', codeStr));
+      const querySnapshot = await getDocs(q);
 
-    const matches: EphemeralSession[] = [];
-    querySnapshot.forEach((d) => {
-      const data = d.data() as EphemeralSession;
-      if (data.status !== 'purged' && data.status !== 'expired' && data.status !== 'revoked') {
-        matches.push(data);
-      }
-    });
+      querySnapshot.forEach((d) => {
+        const data = d.data() as EphemeralSession;
+        if (data.status !== 'purged' && data.status !== 'expired' && data.status !== 'revoked') {
+          const fetchedData = { ...data };
+          saveOrUpdateLocalSession(fetchedData);
+          if (!sessionFromFS) sessionFromFS = fetchedData;
+        }
+      });
+    })(),
+    null
+  );
 
-    if (matches.length > 0) {
-      const match = matches[0];
-      if (!match.fileDataUrl) {
-        const fetched = await getFileFromFirestore(match.id);
-        if (fetched) match.fileDataUrl = fetched;
-      }
-      saveOrUpdateLocalSession(match);
-      return match;
-    }
-  } catch (err) {
-    console.error('Firestore direct lookup error:', err);
-  }
+  if (sessionFromFS) return sessionFromFS;
 
   // 3. Fallback LocalStorage
   const localSessions = getLocalSessions();
@@ -340,13 +363,8 @@ export async function requestReceiverCode(message: string): Promise<EphemeralSes
   }
 
   // 2. Write to Firestore Cloud DB
-  try {
-    const sessionRef = doc(db, 'sessions', createdSession.id);
-    await setDoc(sessionRef, createdSession);
-    console.log('[API] Session written to Firestore:', createdSession.id, createdSession.receiverCode);
-  } catch (err) {
-    console.error('[API] Firestore write error:', err);
-  }
+  const sessionRef = doc(db, 'sessions', createdSession.id);
+  wrapFirestore(setDoc(sessionRef, createdSession), null).catch(() => {});
 
   // 3. Cache in LocalStorage
   saveOrUpdateLocalSession(createdSession);
@@ -384,29 +402,33 @@ export async function donorLoadRequest(receiverCode: string): Promise<EphemeralS
   }
 
   // 2. Query Firestore Cloud DB for matching code
-  try {
-    const sessionsRef = collection(db, 'sessions');
-    const q = query(sessionsRef, where('receiverCode', '==', codeStr));
-    const querySnapshot = await getDocs(q);
+  let sessionFromFS: EphemeralSession | null = null;
+  await wrapFirestore(
+    (async () => {
+      const sessionsRef = collection(db, 'sessions');
+      const q = query(sessionsRef, where('receiverCode', '==', codeStr));
+      const querySnapshot = await getDocs(q);
 
-    const matches: EphemeralSession[] = [];
-    querySnapshot.forEach((d) => {
-      const data = d.data() as EphemeralSession;
-      if (data.status !== 'revoked' && data.status !== 'expired' && now <= data.receiverCodeExpiresAt) {
-        matches.push(data);
+      const matches: EphemeralSession[] = [];
+      querySnapshot.forEach((d) => {
+        const data = d.data() as EphemeralSession;
+        if (data.status !== 'revoked' && data.status !== 'expired' && now <= data.receiverCodeExpiresAt) {
+          matches.push(data);
+        }
+      });
+
+      if (matches.length > 0) {
+        matches.sort((a, b) => b.createdAt - a.createdAt);
+        const target = matches[0];
+        console.log('[API] Found session via Firestore:', target.id);
+        saveOrUpdateLocalSession(target);
+        sessionFromFS = target;
       }
-    });
+    })(),
+    null
+  );
 
-    if (matches.length > 0) {
-      matches.sort((a, b) => b.createdAt - a.createdAt);
-      const target = matches[0];
-      console.log('[API] Found session via Firestore:', target.id);
-      saveOrUpdateLocalSession(target);
-      return target;
-    }
-  } catch (err) {
-    console.warn('[API] Firestore query error:', err);
-  }
+  if (sessionFromFS) return sessionFromFS;
 
   // 3. Local Fallback Check
   const localSessions = getLocalSessions();
@@ -482,22 +504,23 @@ export async function donorAttachFile(
   };
 
   // 2. Sync session metadata to Firestore Cloud DB if available
-  try {
-    const sessionRef = doc(db, 'sessions', sessionId);
-    await updateDoc(sessionRef, {
-      ...updateFields,
-      fileDataUrl: ''
-    }).catch(async () => {
-      await setDoc(sessionRef, { ...updateFields, id: sessionId, fileDataUrl: '' }, { merge: true }).catch(() => {});
-    });
-    const snap = await getDoc(sessionRef).catch(() => null);
-    if (snap && snap.exists()) {
-      const fsSession = snap.data() as EphemeralSession;
-      if (!updatedSession) updatedSession = fsSession;
-    }
-  } catch (err) {
-    // ignore quota/network
-  }
+  const sessionRef = doc(db, 'sessions', sessionId);
+  wrapFirestore(
+    (async () => {
+      await updateDoc(sessionRef, {
+        ...updateFields,
+        fileDataUrl: ''
+      }).catch(async () => {
+        await setDoc(sessionRef, { ...updateFields, id: sessionId, fileDataUrl: '' }, { merge: true }).catch(() => {});
+      });
+      const snap = await getDoc(sessionRef).catch(() => null);
+      if (snap && snap.exists()) {
+        const fsSession = snap.data() as EphemeralSession;
+        if (!updatedSession) updatedSession = fsSession;
+      }
+    })(),
+    null
+  ).catch(() => {});
 
   if (updatedSession) {
     updatedSession.fileDataUrl = fileDataUrl;
@@ -557,23 +580,25 @@ export async function receiverUnlock(sessionId: string, donorCode: string): Prom
   };
 
   // 2. Update Firestore
-  try {
-    const sessionRef = doc(db, 'sessions', sessionId);
-    const snap = await getDoc(sessionRef);
-    if (snap.exists()) {
-      const current = snap.data() as EphemeralSession;
-      if (current.status !== 'unlocked' && current.donorCode !== codeStr) {
-        throw new Error('Codice donatore errato o scaduto.');
+  await wrapFirestore(
+    (async () => {
+      const sessionRef = doc(db, 'sessions', sessionId);
+      const snap = await getDoc(sessionRef);
+      if (snap.exists()) {
+        const current = snap.data() as EphemeralSession;
+        if (current.status !== 'unlocked' && current.donorCode !== codeStr) {
+          throw new Error('Codice donatore errato o scaduto.');
+        }
+        await updateDoc(sessionRef, updateFields);
+        if (!unlockedSession) unlockedSession = { ...current, ...updateFields };
       }
-      await updateDoc(sessionRef, updateFields);
-      if (!unlockedSession) unlockedSession = { ...current, ...updateFields };
-    }
-  } catch (err: any) {
+    })(),
+    null
+  ).catch((err: any) => {
     if (err.message && err.message.includes('Codice donatore errato')) {
       throw err;
     }
-    console.warn('[API] Firestore unlock warning:', err);
-  }
+  });
 
   // 3. Ensure fileDataUrl is loaded from Firestore if missing
   if (unlockedSession && !unlockedSession.fileDataUrl) {
@@ -660,7 +685,7 @@ export async function donorRevoke(sessionId: string): Promise<void> {
 }
 
 export async function fetchSessionStatus(sessionId: string): Promise<EphemeralSession | null> {
-  // 1. Express Server
+  // 1. Express Server (Primary)
   try {
     const res = await fetch(`/api/ephemeral/status/${sessionId}`);
     const contentType = res.headers.get('content-type') || '';
@@ -679,52 +704,223 @@ export async function fetchSessionStatus(sessionId: string): Promise<EphemeralSe
     // ignore
   }
 
-  // 2. Firestore
-  try {
-    const sessionRef = doc(db, 'sessions', sessionId);
-    const snap = await getDoc(sessionRef);
-    if (snap.exists()) {
-      const data = snap.data() as EphemeralSession;
-      if (!data.fileDataUrl) {
-        const fetched = await getFileFromFirestore(sessionId);
-        if (fetched) data.fileDataUrl = fetched;
+  // 2. Firestore (Secondary, wrapped with timeout)
+  return wrapFirestore(
+    (async () => {
+      const sessionRef = doc(db, 'sessions', sessionId);
+      const snap = await getDoc(sessionRef);
+      if (snap.exists()) {
+        const data = snap.data() as EphemeralSession;
+        if (!data.fileDataUrl) {
+          const fetched = await getFileFromFirestore(sessionId);
+          if (fetched) data.fileDataUrl = fetched;
+        }
+        saveOrUpdateLocalSession(data);
+        return data;
       }
-      saveOrUpdateLocalSession(data);
-      return data;
+      return null;
+    })(),
+    null
+  ).catch(() => {
+    // 3. Local (Fallback)
+    const sessions = getLocalSessions();
+    return sessions.find(s => s.id === sessionId) || null;
+  });
+}
+
+export function subscribeToSession(sessionId: string, callback: (session: EphemeralSession) => void) {
+  let isUnsubscribed = false;
+  let pollInterval: any = null;
+
+  const handleCallback = (session: EphemeralSession) => {
+    if (!isUnsubscribed) {
+      callback(session);
+    }
+  };
+
+  // 1. Initial Load from multiple sources
+  fetchSessionStatus(sessionId).then(s => {
+    if (s) handleCallback(s);
+  });
+
+  // 2. Setup Polling as primary fallback (especially for quota exceeded)
+  pollInterval = setInterval(async () => {
+    if (isUnsubscribed) return;
+    const session = await fetchSessionStatus(sessionId);
+    if (session) handleCallback(session);
+  }, 3500);
+
+  // 3. Firestore Listener (if quota allows)
+  let unsubscribeFirestore = () => {};
+  if (Date.now() > firestoreDisabledUntil) {
+    try {
+      const sessionRef = doc(db, 'sessions', sessionId);
+      unsubscribeFirestore = onSnapshot(
+        sessionRef,
+        async (snap) => {
+          if (snap.exists()) {
+            const data = snap.data() as EphemeralSession;
+            let fileData = getClientCachedFile(sessionId);
+            if (fileData) {
+              data.fileDataUrl = fileData;
+            }
+            saveOrUpdateLocalSession(data);
+            handleCallback(data);
+          }
+        },
+        (err) => {
+          console.warn('[FIRESTORE REALTIME SYNC] Using Express API fallback:', err.message);
+          if (err.message?.includes('quota') || err.code === 'resource-exhausted') {
+            firestoreDisabledUntil = Date.now() + 5 * 60 * 1000;
+          }
+        }
+      );
+    } catch (err) {
+      console.warn('[API] Subscription error:', err);
+    }
+  }
+
+  return () => {
+    isUnsubscribed = true;
+    if (pollInterval) clearInterval(pollInterval);
+    unsubscribeFirestore();
+  };
+}
+
+// ==================== SHARED FOLDER SERVICE ====================
+
+export async function createSharedFolder(): Promise<SharedFolder | null> {
+  try {
+    const res = await fetch('/api/folder/create', { method: 'POST' });
+    const data = await res.json();
+    if (data.success) {
+      const folder = data.folder as SharedFolder;
+      // Sync to Firestore for real-time
+      const folderRef = doc(db, 'folders', folder.id);
+      await wrapFirestore(setDoc(folderRef, folder), null);
+      return folder;
+    }
+  } catch (err) {
+    console.error('[API] Folder create error:', err);
+  }
+  return null;
+}
+
+export async function joinSharedFolder(code: string): Promise<SharedFolder | null> {
+  // 1. Check Server
+  try {
+    const res = await fetch('/api/folder/join', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code })
+    });
+    const data = await res.json();
+    if (data.success) {
+      return data.folder as SharedFolder;
     }
   } catch (err) {
     // ignore
   }
 
-  // 3. Local
-  const sessions = getLocalSessions();
-  return sessions.find(s => s.id === sessionId) || null;
+  // 2. Check Firestore
+  return wrapFirestore(
+    (async () => {
+      const foldersRef = collection(db, 'folders');
+      const q = query(foldersRef, where('code', '==', code.trim()), where('status', '==', 'active'));
+      const snap = await getDocs(q);
+      if (!snap.empty) {
+        return snap.docs[0].data() as SharedFolder;
+      }
+      return null;
+    })(),
+    null
+  );
 }
 
-export function subscribeToSession(sessionId: string, callback: (session: EphemeralSession) => void) {
+export async function addFileToSharedFolder(folderId: string, file: File, dataUrl: string, donorId: string): Promise<boolean> {
   try {
-    const sessionRef = doc(db, 'sessions', sessionId);
-    return onSnapshot(
-      sessionRef,
-      async (snap) => {
-        if (snap.exists()) {
-          const data = snap.data() as EphemeralSession;
-          let fileData = getClientCachedFile(sessionId);
-          if (fileData) {
-            data.fileDataUrl = fileData;
-          }
-          saveOrUpdateLocalSession(data);
-          callback(data);
-        }
-      },
-      (err) => {
-        // Silently catch Firestore quota limits or backoff errors
-        // Polling via Express server REST API handles synchronization seamlessly
-        console.warn('[FIRESTORE REALTIME SYNC] Using Express API fallback:', err.message);
-      }
-    );
+    const res = await fetch(`/api/folder/${folderId}/upload`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: file.name,
+        size: file.size,
+        type: file.type,
+        fileDataUrl: dataUrl,
+        donorId
+      })
+    });
+    const data = await res.json();
+    if (data.success) {
+      // Update Firestore to notify others
+      const folderRef = doc(db, 'folders', folderId);
+      await wrapFirestore(updateDoc(folderRef, { files: data.folder.files }), null);
+      return true;
+    }
   } catch (err) {
-    console.warn('[API] Subscription error:', err);
-    return () => {};
+    console.error('[API] Folder upload error:', err);
   }
+  return false;
+}
+
+export async function removeFileFromSharedFolder(folderId: string, fileId: string): Promise<boolean> {
+  try {
+    const res = await fetch(`/api/folder/${folderId}/file/${fileId}`, { method: 'DELETE' });
+    const data = await res.json();
+    if (data.success) {
+      // Update Firestore
+      const folderRef = doc(db, 'folders', folderId);
+      const snap = await wrapFirestore(getDoc(folderRef), null);
+      if (snap && snap.exists()) {
+        const folder = snap.data() as SharedFolder;
+        const newFiles = folder.files.filter(f => f.id !== fileId);
+        await wrapFirestore(updateDoc(folderRef, { files: newFiles }), null);
+      }
+      return true;
+    }
+  } catch (err) {
+    // ignore
+  }
+  return false;
+}
+
+export function subscribeToSharedFolder(folderId: string, callback: (folder: SharedFolder) => void) {
+  let isUnsubscribed = false;
+  let pollInterval: any = null;
+
+  const handleCallback = (folder: SharedFolder) => {
+    if (!isUnsubscribed) callback(folder);
+  };
+
+  // 1. Server Polling (Fallback)
+  pollInterval = setInterval(async () => {
+    try {
+      const res = await fetch(`/api/folder/${folderId}/status`);
+      const data = await res.json();
+      if (data.success) handleCallback(data.folder);
+    } catch (e) {}
+  }, 4000);
+
+  // 2. Firestore Real-time
+  let unsubscribeFS = () => {};
+  if (Date.now() > firestoreDisabledUntil) {
+    try {
+      const folderRef = doc(db, 'folders', folderId);
+      unsubscribeFS = onSnapshot(folderRef, (snap) => {
+        if (snap.exists()) {
+          handleCallback(snap.data() as SharedFolder);
+        }
+      }, (err) => {
+        if (err.message?.includes('quota') || err.code === 'resource-exhausted') {
+          firestoreDisabledUntil = Date.now() + 5 * 60 * 1000;
+        }
+      });
+    } catch (err) {}
+  }
+
+  return () => {
+    isUnsubscribed = true;
+    if (pollInterval) clearInterval(pollInterval);
+    unsubscribeFS();
+  };
 }

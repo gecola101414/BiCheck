@@ -44,7 +44,24 @@ interface EphemeralSessionInternal {
 }
 
 let activeSessions: Map<string, EphemeralSessionInternal> = new Map();
+const activeFolders: Map<string, SharedFolderInternal> = new Map();
 const fileMemoryStore: Map<string, string> = new Map();
+
+interface SharedFolderInternal {
+  id: string;
+  code: string;
+  createdAt: number;
+  expiresAt: number;
+  files: {
+    id: string;
+    name: string;
+    size: number;
+    type: string;
+    uploadedAt: number;
+    donorId: string;
+  }[];
+  status: 'active' | 'expired' | 'closed';
+}
 
 // Save file data blob to disk & optional memory
 function saveFileBlob(sessionId: string, dataUrl: string) {
@@ -173,6 +190,15 @@ function cleanupSessions() {
 
   if (changed) {
     saveSessionsToDisk();
+  }
+
+  // Cleanup Shared Folders (10 mins)
+  for (const [id, folder] of activeFolders.entries()) {
+    if (folder.status !== 'closed' && (now > folder.expiresAt)) {
+      folder.status = 'expired';
+      folder.files.forEach(f => purgeFileBlob(`${id}_${f.id}`));
+      console.log(`[FOLDER] Expired: ${id}`);
+    }
   }
 }
 
@@ -472,6 +498,118 @@ app.get("/api/ephemeral/status/:sessionId", (req, res) => {
     session.fileUrl = `/api/ephemeral/download/${session.id}`;
   }
   res.json({ success: true, session });
+});
+
+// ==================== SHARED FOLDER API (10 MINS) ====================
+
+const FOLDER_LIFESPAN = 10 * 60 * 1000;
+
+app.post("/api/folder/create", (req, res) => {
+  const now = Date.now();
+  const id = "fol_" + Math.random().toString(36).substring(2, 9);
+  const code = generate4DigitCode();
+  
+  const folder: SharedFolderInternal = {
+    id,
+    code,
+    createdAt: now,
+    expiresAt: now + FOLDER_LIFESPAN,
+    files: [],
+    status: 'active'
+  };
+
+  activeFolders.set(id, folder);
+  console.log(`[FOLDER] Created: ${code} (ID: ${id})`);
+  res.json({ success: true, folder });
+});
+
+app.post("/api/folder/join", (req, res) => {
+  const { code } = req.body;
+  const now = Date.now();
+  
+  const folder = Array.from(activeFolders.values()).find(f => 
+    f.code === code && f.status === 'active' && now < f.expiresAt
+  );
+
+  if (!folder) {
+    return res.status(404).json({ error: "Cartella non trovata o scaduta." });
+  }
+
+  res.json({ success: true, folder });
+});
+
+app.post("/api/folder/:folderId/upload", (req, res) => {
+  const { folderId } = req.params;
+  const { name, size, type, fileDataUrl, donorId } = req.body;
+  const folder = activeFolders.get(folderId);
+
+  if (!folder || folder.status !== 'active' || Date.now() > folder.expiresAt) {
+    return res.status(404).json({ error: "Cartella scaduta o non valida." });
+  }
+
+  if (folder.files.length >= 5) {
+    return res.status(400).json({ error: "Limite di 5 file raggiunto per questa cartella." });
+  }
+
+  const fileId = "file_" + Math.random().toString(36).substring(2, 9);
+  const fileEntry = {
+    id: fileId,
+    name: name || "file",
+    size: size || 0,
+    type: type || "application/octet-stream",
+    uploadedAt: Date.now(),
+    donorId: donorId || "anon"
+  };
+
+  folder.files.push(fileEntry);
+  saveFileBlob(`${folderId}_${fileId}`, fileDataUrl);
+
+  res.json({ success: true, file: fileEntry, folder });
+});
+
+app.get("/api/folder/:folderId/file/:fileId", (req, res) => {
+  const { folderId, fileId } = req.params;
+  const folder = activeFolders.get(folderId);
+
+  if (!folder || Date.now() > folder.expiresAt) {
+    return res.status(404).send("Cartella scaduta.");
+  }
+
+  const file = folder.files.find(f => f.id === fileId);
+  if (!file) return res.status(404).send("File non trovato.");
+
+  const fileData = getFileBlob(`${folderId}_${fileId}`);
+  if (!fileData) return res.status(404).send("Dati file non trovati.");
+
+  const match = fileData.match(/^data:(.*?);base64,(.*)$/);
+  if (match) {
+    const mimeType = match[1] || file.type || "application/octet-stream";
+    const buffer = Buffer.from(match[2], "base64");
+    res.setHeader("Content-Type", mimeType);
+    res.setHeader("Content-Disposition", `attachment; filename="${encodeURIComponent(file.name)}"`);
+    return res.send(buffer);
+  }
+
+  res.setHeader("Content-Type", "text/plain");
+  res.send(fileData);
+});
+
+app.delete("/api/folder/:folderId/file/:fileId", (req, res) => {
+  const { folderId, fileId } = req.params;
+  const folder = activeFolders.get(folderId);
+
+  if (folder) {
+    folder.files = folder.files.filter(f => f.id !== fileId);
+    purgeFileBlob(`${folderId}_${fileId}`);
+  }
+
+  res.json({ success: true });
+});
+
+app.get("/api/folder/:folderId/status", (req, res) => {
+  const folder = activeFolders.get(req.params.folderId);
+  if (!folder) return res.status(404).json({ error: "Non trovata" });
+  res.json({ success: true, folder });
 });
 
 // ==================== VITE MIDDLEWARE ====================

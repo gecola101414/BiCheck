@@ -1,3 +1,22 @@
+export interface SharedFile {
+  id: string;
+  name: string;
+  size: number;
+  type: string;
+  uploadedAt: number;
+  donorId: string;
+  fileDataUrl?: string; // Cache local
+}
+
+export interface SharedFolder {
+  id: string;
+  code: string;
+  createdAt: number;
+  expiresAt: number;
+  files: SharedFile[];
+  status: 'active' | 'expired' | 'closed';
+}
+
 export type SessionState = 
   | 'pending_donor_upload'   // Step 1: Receiver generated Receiver Code (4 digits) with custom message
   | 'pending_receiver_unlock' // Step 2-3: Donor saw message, attached file, generated Donor Code (4 digits)

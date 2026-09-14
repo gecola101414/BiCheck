@@ -4,6 +4,7 @@ import { MinimalReceiverView } from './components/MinimalReceiverView';
 import { MinimalDonorView } from './components/MinimalDonorView';
 import { QuickDirectTransfer } from './components/QuickDirectTransfer';
 import { MinimalDualSim } from './components/MinimalDualSim';
+import { SharedFolderView } from './components/SharedFolderView';
 import { ShieldCheck, Lock, Trash2, Key } from 'lucide-react';
 
 export default function App() {
@@ -19,6 +20,7 @@ export default function App() {
         {mode === 'receiver' && <MinimalReceiverView />}
         {mode === 'donor' && <MinimalDonorView />}
         {mode === 'quick_direct' && <QuickDirectTransfer />}
+        {mode === 'shared_folder' && <SharedFolderView />}
         {mode === 'dual_sim' && <MinimalDualSim />}
       </main>
 
