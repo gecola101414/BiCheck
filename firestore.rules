@@ -1,8 +1,32 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
+    // Default deny
     match /{document=**} {
-      allow read, write: if true;
+      allow read, write: if false;
+    }
+
+    // Helper functions
+    function isValidId(id) {
+      return id is string && id.size() == 6 && id.matches('^[0-9]+$');
+    }
+
+    function isValidShareRoom(data) {
+      return data.keys().hasAll(['documents', 'createdAt']) 
+        && data.keys().size() == 2
+        && data.documents is list
+        && data.documents.size() > 0
+        && data.documents.size() <= 10
+        && data.createdAt is timestamp;
+    }
+
+    match /stanze_condivisione/{roomId} {
+      allow get: if isValidId(roomId);
+      allow create: if isValidId(roomId) && isValidShareRoom(request.resource.data) && request.resource.data.createdAt == request.time;
+      allow delete: if isValidId(roomId);
+      
+      // No updates or listing allowed for privacy
+      allow update, list: if false;
     }
   }
 }

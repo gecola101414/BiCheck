@@ -1,6 +1,6 @@
 {
-  "name": "GecolaShare",
-  "description": "Trasferimento file ultra-sicuro con crittografia end-to-end AES-256-GCM, zero permanenza sul server ed auto-distruzione immediata dopo il download.",
+  "name": "ID-Share Vault",
+  "description": "Securely store and share identification documents using local storage and temporary Firebase rooms.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

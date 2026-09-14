@@ -1,43 +1,27 @@
 {
   "entities": {
-    "SharedFolder": {
-      "title": "Shared Folder",
-      "description": "A temporary shared folder for real-time file exchange between two devices.",
+    "ShareRoom": {
+      "title": "Share Room",
+      "description": "A temporary room for sharing documents via a 6-digit code.",
       "type": "object",
       "properties": {
-        "id": { "type": "string" },
-        "code": { "type": "string", "maxLength": 4 },
-        "createdAt": { "type": "number" },
-        "expiresAt": { "type": "number" },
-        "files": {
+        "documents": {
           "type": "array",
-          "items": {
-            "$ref": "SharedFile"
-          }
+          "description": "List of base64 encoded documents."
         },
-        "status": { "type": "string", "enum": ["active", "expired", "closed"] }
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "When the room was created."
+        }
       },
-      "required": ["id", "code", "createdAt", "expiresAt", "status"]
-    },
-    "SharedFile": {
-      "title": "Shared File",
-      "description": "Metadata for a file within a shared folder.",
-      "type": "object",
-      "properties": {
-        "id": { "type": "string" },
-        "name": { "type": "string" },
-        "size": { "type": "number" },
-        "type": { "type": "string" },
-        "uploadedAt": { "type": "number" },
-        "donorId": { "type": "string" }
-      },
-      "required": ["id", "name", "size", "type", "uploadedAt"]
+      "required": ["documents", "createdAt"]
     }
   },
   "firestore": {
-    "/folders/{folderId}": {
-      "schema": "SharedFolder",
-      "description": "Shared folder sessions."
+    "/stanze_condivisione/{roomId}": {
+      "schema": "ShareRoom",
+      "description": "Collection of temporary sharing rooms indexed by 6-digit codes."
     }
   }
 }
