@@ -1,5 +1,11 @@
 import { EphemeralSession, SharedFolder, SharedFile } from '../types';
-import { db } from '../lib/firebase';
+import { db, storage } from '../lib/firebase';
+import { 
+  ref, 
+  uploadString, 
+  getDownloadURL, 
+  deleteObject 
+} from 'firebase/storage';
 import { 
   collection, 
   doc, 
@@ -125,10 +131,18 @@ export function dataUrlToBlob(dataUrl: string): Blob {
   }
 }
 
-export async function saveFileToFirestore(_sessionId: string, _fileDataUrl: string): Promise<void> {
-  // Files are stored securely on the Express server disk and cached in memory.
-  // We avoid writing heavy file chunks to Firestore to prevent daily quota exhaustion.
-  return;
+export async function saveFileToFirestore(sessionId: string, fileDataUrl: string): Promise<void> {
+  // Use Firebase Storage as primary store for files to bypass Firestore quota limits
+  const storagePath = `sessions/${sessionId}/file`;
+  const storageRef = ref(storage, storagePath);
+  try {
+    await uploadString(storageRef, fileDataUrl, 'data_url');
+    const downloadUrl = await getDownloadURL(storageRef);
+    const sessionRef = doc(db, 'sessions', sessionId);
+    await updateDoc(sessionRef, { fileUrl: downloadUrl }).catch(() => {});
+  } catch (err) {
+    console.error('[STORAGE] Failed to save file:', err);
+  }
 }
 
 export async function getFileFromFirestore(sessionId: string): Promise<string | null> {
@@ -142,12 +156,44 @@ export async function getFileFromFirestore(sessionId: string): Promise<string | 
 
       if (snap.exists()) {
         const data = snap.data();
+        
+        // 1. Try Firebase Storage via fileUrl (most reliable)
+        if (data.fileUrl && data.fileUrl.startsWith('http')) {
+          try {
+            const res = await fetch(data.fileUrl);
+            const blob = await res.blob();
+            return new Promise((resolve) => {
+              const reader = new FileReader();
+              reader.onloadend = () => resolve(reader.result as string);
+              reader.readAsDataURL(blob);
+            });
+          } catch (e) {
+            console.warn('[STORAGE] Fetch from URL failed, trying direct Storage ref');
+          }
+        }
+
+        // 2. Try direct Storage reference
+        try {
+          const storageRef = ref(storage, `sessions/${sessionId}/file`);
+          const url = await getDownloadURL(storageRef);
+          const res = await fetch(url);
+          const blob = await res.blob();
+          return new Promise((resolve) => {
+            const reader = new FileReader();
+            reader.onloadend = () => resolve(reader.result as string);
+            reader.readAsDataURL(blob);
+          });
+        } catch (e) {
+          // ignore
+        }
+
+        // 3. Fallback to inline Firestore data (for legacy or small files)
         if (data.fileDataUrl && data.fileDataUrl.length > 50) {
           cacheClientFile(sessionId, data.fileDataUrl);
           return data.fileDataUrl;
         }
         
-        // Try fetching chunks if inline data is missing
+        // 4. Try fetching chunks (legacy fallback)
         const chunksRef = collection(db, 'sessions', sessionId, 'chunks');
         const chunkSnap = await getDocs(chunksRef);
         if (!chunkSnap.empty) {
@@ -166,6 +212,13 @@ export async function getFileFromFirestore(sessionId: string): Promise<string | 
 
 export async function purgeFirestoreSession(sessionId: string): Promise<void> {
   clearClientCachedFile(sessionId);
+  
+  // 1. Delete from Storage
+  try {
+    const storageRef = ref(storage, `sessions/${sessionId}/file`);
+    await deleteObject(storageRef).catch(() => {});
+  } catch (e) {}
+
   wrapFirestore(
     (async () => {
       const sessionRef = doc(db, 'sessions', sessionId);
@@ -553,24 +606,35 @@ export async function donorAttachFile(
   const sessionRef = doc(db, 'sessions', sessionId);
   await wrapFirestore(
     (async () => {
-      // In stateless/serverless mode, we must include the file data in Firestore
-      // as there is no persistent disk store.
+      // Primary: Upload to Firebase Storage
+      const storageRef = ref(storage, `sessions/${sessionId}/file`);
+      let downloadUrl = '';
+      try {
+        await uploadString(storageRef, fileDataUrl, 'data_url');
+        downloadUrl = await getDownloadURL(storageRef);
+      } catch (err) {
+        console.error('[STORAGE] Upload failed during donor attach:', err);
+      }
+
       const isLarge = fileDataUrl.length >= 800000;
-      const safeDataUrl = isLarge ? '' : fileDataUrl;
+      // We still store a small chunk or empty string in Firestore to keep the doc schema consistent
+      const safeDataUrl = (isLarge || downloadUrl) ? '' : fileDataUrl;
 
       await updateDoc(sessionRef, {
         ...updateFields,
-        fileDataUrl: safeDataUrl 
+        fileDataUrl: safeDataUrl,
+        fileUrl: downloadUrl || updateFields.fileUrl
       }).catch(async () => {
         await setDoc(sessionRef, { 
           ...updateFields, 
           id: sessionId, 
-          fileDataUrl: safeDataUrl 
+          fileDataUrl: safeDataUrl,
+          fileUrl: downloadUrl || updateFields.fileUrl
         }, { merge: true }).catch(() => {});
       });
 
-      // Handle chunking for large files
-      if (isLarge) {
+      // Handle chunking ONLY as a secondary fallback if Storage failed and file is large
+      if (isLarge && !downloadUrl) {
         const chunkSize = 950000;
         const totalChunks = Math.ceil(fileDataUrl.length / chunkSize);
         for (let i = 0; i < totalChunks; i++) {
@@ -964,55 +1028,43 @@ export async function addFileToSharedFolder(folderId: string, file: File, dataUr
         type: file.type,
         fileDataUrl: dataUrl,
         donorId,
-        fileId // Send local ID to server
+        fileId 
       })
     });
     
     const data = await res.json().catch(() => ({}));
     if (res.ok && data.success) {
-      // Sync to Firestore using the confirmed file list from server
       const folderRef = doc(db, 'folders', folderId);
       await wrapFirestore(updateDoc(folderRef, { files: data.folder.files }), null, true);
     } else {
-      throw new Error(data.error || 'Server rejected upload or size limit hit');
+      throw new Error(data.error || 'Server rejected upload');
     }
   } catch (err) {
-    console.warn('[API] Folder server upload failed, attempting direct cloud sync:', err);
+    console.warn('[API] Folder server upload failed, using Cloud Storage fallback:', err);
     
-    // Stateless Fallback: Update Firestore list directly
+    // Cloud Storage Fallback
+    let storageUrl = '';
+    try {
+      const storageRef = ref(storage, `folders/${folderId}/${fileId}`);
+      await uploadString(storageRef, dataUrl, 'data_url');
+      storageUrl = await getDownloadURL(storageRef);
+    } catch (e) {
+      console.error('[STORAGE] Folder upload failed:', e);
+    }
+
     const folderRef = doc(db, 'folders', folderId);
     const snap = await wrapFirestore(getDoc(folderRef), null);
     if (snap && snap.exists()) {
       const currentFolder = snap.data() as SharedFolder;
-      if (currentFolder.files.length >= 5) {
-        throw new Error('Limite di 5 file raggiunto.');
+      if (currentFolder.files.length >= 10) {
+        throw new Error('Limite di 10 file raggiunto.');
       }
-      const updatedFiles = [...currentFolder.files, { ...fileEntry, fileDataUrl: dataUrl.length < 800000 ? dataUrl : '' }];
-      const updateRes = await wrapFirestore(updateDoc(folderRef, { files: updatedFiles }), null, true);
-      if (updateRes === null && Date.now() < firestoreDisabledUntil) {
-        throw new Error('Limite di quota Firebase raggiunto. Impossibile sincronizzare il file.');
-      }
-    } else {
-      if (Date.now() < firestoreDisabledUntil) {
-        throw new Error('Sistema cloud non disponibile (Quota Exceeded).');
-      }
-      throw new Error('Cartella non trovata nel cloud. Sincronizzazione fallita.');
-    }
-  }
-
-  // Always save chunks for large files using the consistent fileId
-  if (dataUrl.length >= 800000) {
-    try {
-      const chunkSize = 950000;
-      const totalChunks = Math.ceil(dataUrl.length / chunkSize);
-      for (let i = 0; i < totalChunks; i++) {
-        const chunk = dataUrl.substring(i * chunkSize, (i + 1) * chunkSize);
-        const chunkRef = doc(db, 'folders', folderId, 'file_chunks', `${fileId}_${i}`);
-        await wrapFirestore(setDoc(chunkRef, { data: chunk, index: i, fileId }), null, true);
-      }
-    } catch (err) {
-      console.error('[API] Error saving chunks to Firestore:', err);
-      return false;
+      const updatedFiles = [...currentFolder.files, { 
+        ...fileEntry, 
+        fileDataUrl: (dataUrl.length < 500000 && !storageUrl) ? dataUrl : '',
+        fileUrl: storageUrl
+      }];
+      await wrapFirestore(updateDoc(folderRef, { files: updatedFiles }), null, true);
     }
   }
 
@@ -1020,6 +1072,12 @@ export async function addFileToSharedFolder(folderId: string, file: File, dataUr
 }
 
 export async function removeFileFromSharedFolder(folderId: string, fileId: string): Promise<boolean> {
+  // Delete from Storage
+  try {
+    const storageRef = ref(storage, `folders/${folderId}/${fileId}`);
+    await deleteObject(storageRef).catch(() => {});
+  } catch (e) {}
+
   try {
     const res = await fetch(`/api/folder/${folderId}/file/${fileId}`, { method: 'DELETE' });
     const data = await res.json();
@@ -1050,6 +1108,21 @@ export async function removeFileFromSharedFolder(folderId: string, fileId: strin
 }
 
 export async function fetchFileChunks(folderId: string, fileId: string): Promise<string | null> {
+  // 1. Try Storage first
+  try {
+    const storageRef = ref(storage, `folders/${folderId}/${fileId}`);
+    const url = await getDownloadURL(storageRef);
+    const res = await fetch(url);
+    const blob = await res.blob();
+    return new Promise((resolve) => {
+      const reader = new FileReader();
+      reader.onloadend = () => resolve(reader.result as string);
+      reader.readAsDataURL(blob);
+    });
+  } catch (e) {
+    // ignore
+  }
+
   return wrapFirestore(
     (async () => {
       const chunksRef = collection(db, 'folders', folderId, 'file_chunks');
