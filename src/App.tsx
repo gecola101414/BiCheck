@@ -16,7 +16,6 @@ import {
   updateDoc,
   onSnapshot
 } from 'firebase/firestore';
-import { getAuth, signInAnonymously } from 'firebase/auth';
 import { 
   Shield, 
   Upload, 
@@ -41,7 +40,6 @@ function cn(...inputs: ClassValue[]) {
 // Initialize Firebase
 const app = initializeApp(firebaseConfig);
 const db = getFirestore(app, (firebaseConfig as any).firestoreDatabaseId);
-const auth = getAuth(app);
 
 enum OperationType {
   CREATE = 'create',
@@ -103,7 +101,6 @@ export default function App() {
 
   useEffect(() => {
     loadArchive();
-    signInAnonymously(auth).catch(err => console.error('Auth error:', err));
   }, []);
 
   const loadArchive = async () => {
