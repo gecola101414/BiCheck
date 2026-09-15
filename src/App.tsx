@@ -257,8 +257,17 @@ export default function App() {
         
         if (data.status === 'joined') {
           // Receiver joined! Now upload the documents
-          setError('Destinatario connesso. Inviando documenti...');
           const docsToShare = myArchive.filter(d => selectedDocs.has(d.id));
+          
+          // Estimate size to avoid Firestore 1MB limit
+          const totalSize = docsToShare.reduce((acc, d) => acc + d.base64.length, 0);
+          if (totalSize > 1000000) { // ~1MB
+            setError('Errore: I file selezionati sono troppo pesanti (>1MB). Riduci la qualità o seleziona meno file.');
+            setIsProcessing(false);
+            return;
+          }
+
+          setError('Destinatario connesso. Inviando documenti...');
           
           try {
             await updateDoc(doc(db, 'stanze_condivisione', roomCode), {
@@ -283,6 +292,8 @@ export default function App() {
     }
   };
 
+  const [receivedDocs, setReceivedDocs] = useState<any[]>([]);
+
   const handleReceive = async () => {
     if (code.length !== 6) {
       setError('Inserisci un codice a 6 cifre.');
@@ -290,6 +301,7 @@ export default function App() {
     }
     setIsProcessing(true);
     setError(null);
+    setReceivedDocs([]);
     const path = `stanze_condivisione/${code}`;
     
     try {
@@ -302,7 +314,7 @@ export default function App() {
           status: 'joined'
         });
         
-        setError('Connesso. In attesa dei file...');
+        setError('Connesso. In attesa che il donatore invii i file...');
 
         // Step 2: Wait for transmitter to upload files
         const unsub = onSnapshot(docRef, async (snapshot) => {
@@ -312,19 +324,10 @@ export default function App() {
           }
           const data = snapshot.data();
           if (data.status === 'ready' && data.documents) {
-            const documents = data.documents;
-            documents.forEach((file: any) => {
-              const link = document.createElement('a');
-              link.href = file.base64;
-              link.download = file.nome;
-              link.click();
-            });
-
-            await deleteDoc(docRef);
-            unsub();
-            setCode('');
-            setError('Ricezione completata!');
+            setReceivedDocs(data.documents);
+            setError('File ricevuti! Clicca sulle icone per scaricarli.');
             setIsProcessing(false);
+            // We don't delete yet to allow manual clicks
           }
         });
       } else {
@@ -334,6 +337,28 @@ export default function App() {
     } catch (err) {
       setError(`Errore Ricezione: ${handleFirestoreError(err, OperationType.GET, path)}`);
       setIsProcessing(false);
+    }
+  };
+
+  const downloadFile = (file: any) => {
+    const link = document.createElement('a');
+    link.href = file.base64;
+    link.download = file.nome;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
+  const finalizeSession = async () => {
+    try {
+      const docRef = doc(db, 'stanze_condivisione', code);
+      await deleteDoc(docRef);
+      setCode('');
+      setReceivedDocs([]);
+      setView('home');
+      setError('Sessione chiusa correttamente.');
+    } catch (err) {
+      console.error(err);
     }
   };
 
@@ -375,14 +400,40 @@ export default function App() {
                     className="w-full bg-neutral-950 border border-neutral-800 focus:border-blue-500/50 focus:ring-4 focus:ring-blue-500/5 rounded-2xl p-4 text-center text-2xl tracking-[0.25em] font-mono outline-none transition-all placeholder:text-neutral-700 placeholder:tracking-normal"
                   />
                 </div>
-                <button 
-                  onClick={handleReceive}
-                  disabled={isProcessing || code.length !== 6}
-                  className="w-full bg-blue-600 hover:bg-blue-500 disabled:bg-neutral-800 disabled:text-neutral-500 py-4 rounded-2xl font-bold text-white transition-all shadow-lg shadow-blue-900/20 active:scale-[0.98] flex items-center justify-center gap-2"
-                >
-                  {isProcessing ? <RefreshCw className="w-5 h-5 animate-spin" /> : <Download className="w-5 h-5" />}
-                  Scarica Documenti
-                </button>
+                {receivedDocs.length === 0 ? (
+                  <button 
+                    onClick={handleReceive}
+                    disabled={isProcessing || code.length !== 6}
+                    className="w-full bg-blue-600 hover:bg-blue-500 disabled:bg-neutral-800 disabled:text-neutral-500 py-4 rounded-2xl font-bold text-white transition-all shadow-lg shadow-blue-900/20 active:scale-[0.98] flex items-center justify-center gap-2"
+                  >
+                    {isProcessing ? <RefreshCw className="w-5 h-5 animate-spin" /> : <Download className="w-5 h-5" />}
+                    Ricevi Documenti
+                  </button>
+                ) : (
+                  <div className="space-y-3 animate-in fade-in zoom-in-95">
+                    <p className="text-xs font-bold text-emerald-500 text-center uppercase tracking-widest mb-2">File Pronti al Download</p>
+                    {receivedDocs.map((file, i) => (
+                      <button
+                        key={i}
+                        onClick={() => downloadFile(file)}
+                        className="w-full bg-emerald-500/10 border border-emerald-500/20 hover:bg-emerald-500/20 p-4 rounded-2xl flex items-center justify-between transition-all"
+                      >
+                        <div className="flex items-center gap-3">
+                          <FileText className="w-5 h-5 text-emerald-500" />
+                          <span className="text-sm font-bold text-white truncate max-w-[150px]">{file.nome}</span>
+                        </div>
+                        <Download className="w-4 h-4 text-emerald-500" />
+                      </button>
+                    ))}
+                    <button 
+                      onClick={finalizeSession}
+                      className="w-full py-3 text-xs font-bold text-neutral-500 hover:text-neutral-300 transition-colors flex items-center justify-center gap-2"
+                    >
+                      <CheckCircle2 className="w-4 h-4" />
+                      Chiudi Sessione e Pulisci
+                    </button>
+                  </div>
+                )}
               </div>
 
               <div className="pt-4 border-t border-neutral-800/50">
