@@ -31,6 +31,10 @@ service cloud.firestore {
 
       match /documenti/{docId} {
         allow read, write: if isValidId(roomId);
+        
+        match /chunks/{chunkId} {
+          allow read, write: if isValidId(roomId);
+        }
       }
     }
   }

@@ -134,7 +134,7 @@ export default function App() {
     }
   };
 
-  const compressImage = (base64Str: string, maxWidth = 1200, maxHeight = 1200, quality = 0.7): Promise<string> => {
+  const compressImage = (base64Str: string, maxWidth = 1000, maxHeight = 1000, quality = 0.6): Promise<string> => {
     return new Promise((resolve) => {
       const img = new Image();
       img.src = base64Str;
@@ -159,7 +159,27 @@ export default function App() {
         canvas.height = height;
         const ctx = canvas.getContext('2d');
         ctx?.drawImage(img, 0, 0, width, height);
-        resolve(canvas.toDataURL('image/jpeg', quality));
+        
+        let currentQuality = quality;
+        let result = canvas.toDataURL('image/jpeg', currentQuality);
+        
+        // Loop to ensure size is under 1,000,000 bytes (Base64 length)
+        while (result.length > 1000000 && currentQuality > 0.1) {
+          currentQuality -= 0.1;
+          result = canvas.toDataURL('image/jpeg', currentQuality);
+        }
+        
+        // If still too big, shrink dimensions further
+        if (result.length > 1000000) {
+          const shrinkCanvas = document.createElement('canvas');
+          shrinkCanvas.width = width * 0.7;
+          shrinkCanvas.height = height * 0.7;
+          const sCtx = shrinkCanvas.getContext('2d');
+          sCtx?.drawImage(canvas, 0, 0, shrinkCanvas.width, shrinkCanvas.height);
+          resolve(shrinkCanvas.toDataURL('image/jpeg', 0.5));
+        } else {
+          resolve(result);
+        }
       };
       img.onerror = () => resolve(base64Str);
     });
@@ -267,11 +287,21 @@ export default function App() {
             
             // Upload each doc to subcollection
             for (const d of docsToShare) {
-              await addDoc(collection(db, 'stanze_condivisione', roomCode, 'documenti'), {
+              const docRef = await addDoc(collection(db, 'stanze_condivisione', roomCode, 'documenti'), {
                 nome: d.fileName,
                 tipo: d.fileType,
-                base64: d.base64
+                numChunks: Math.ceil(d.base64.length / 800000) // Chunk size ~800KB
               });
+
+              // Split and upload chunks
+              const chunkSize = 800000;
+              for (let i = 0; i < d.base64.length; i += chunkSize) {
+                const chunk = d.base64.substring(i, i + chunkSize);
+                await addDoc(collection(db, 'stanze_condivisione', roomCode, 'documenti', docRef.id, 'chunks'), {
+                  index: Math.floor(i / chunkSize),
+                  data: chunk
+                });
+              }
             }
 
             await updateDoc(doc(db, 'stanze_condivisione', roomCode), {
@@ -323,12 +353,27 @@ export default function App() {
           }
           const data = snapshot.data();
           if (data.status === 'ready') {
-            const { getDocs, collection } = await import('firebase/firestore');
+            const { getDocs, collection, query, orderBy } = await import('firebase/firestore');
             const docsSnap = await getDocs(collection(db, 'stanze_condivisione', code, 'documenti'));
-            const docsList = docsSnap.docs.map(d => d.data());
             
-            setReceivedDocs(docsList);
-            setError('File ricevuti! Clicca sulle icone per scaricarli.');
+            const reassembledList = [];
+            for (const docItem of docsSnap.docs) {
+              const docData = docItem.data();
+              const chunksSnap = await getDocs(query(
+                collection(db, 'stanze_condivisione', code, 'documenti', docItem.id, 'chunks'),
+                orderBy('index', 'asc')
+              ));
+              
+              const fullBase64 = chunksSnap.docs.map(c => c.data().data).join('');
+              reassembledList.push({
+                nome: docData.nome,
+                tipo: docData.tipo,
+                base64: fullBase64
+              });
+            }
+            
+            setReceivedDocs(reassembledList);
+            setError('File ricevuti e ricomposti! Clicca sulle icone per scaricarli.');
             setIsProcessing(false);
           }
         });
