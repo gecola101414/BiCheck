@@ -5,9 +5,10 @@
       "description": "A temporary room for sharing documents via a 6-digit code.",
       "type": "object",
       "properties": {
-        "documents": {
-          "type": "array",
-          "description": "List of base64 encoded documents."
+        "status": {
+          "type": "string",
+          "enum": ["waiting", "joined", "ready"],
+          "description": "The current status of the sharing session."
         },
         "createdAt": {
           "type": "string",
@@ -15,13 +16,28 @@
           "description": "When the room was created."
         }
       },
-      "required": ["documents", "createdAt"]
+      "required": ["status", "createdAt"]
+    },
+    "SharedDocument": {
+      "title": "Shared Document",
+      "description": "A document shared in a room.",
+      "type": "object",
+      "properties": {
+        "nome": { "type": "string" },
+        "tipo": { "type": "string" },
+        "base64": { "type": "string" }
+      },
+      "required": ["nome", "tipo", "base64"]
     }
   },
   "firestore": {
     "/stanze_condivisione/{roomId}": {
       "schema": "ShareRoom",
-      "description": "Collection of temporary sharing rooms indexed by 6-digit codes."
+      "description": "Collection of temporary sharing rooms."
+    },
+    "/stanze_condivisione/{roomId}/documenti/{docId}": {
+      "schema": "SharedDocument",
+      "description": "Subcollection of documents shared in a specific room."
     }
   }
 }

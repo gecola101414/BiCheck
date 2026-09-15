@@ -22,13 +22,16 @@ service cloud.firestore {
           (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status']) 
            && request.resource.data.status == 'joined')
           ||
-          // Action: Upload
-          (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['documents', 'status'])
-           && request.resource.data.status == 'ready'
-           && request.resource.data.documents is list)
+          // Action: Ready
+          (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status'])
+           && request.resource.data.status == 'ready')
         );
       
       allow delete: if isValidId(roomId);
+
+      match /documenti/{docId} {
+        allow read, write: if isValidId(roomId);
+      }
     }
   }
 }

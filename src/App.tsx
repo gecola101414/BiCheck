@@ -259,27 +259,26 @@ export default function App() {
           // Receiver joined! Now upload the documents
           const docsToShare = myArchive.filter(d => selectedDocs.has(d.id));
           
-          // Estimate size to avoid Firestore 1MB limit
-          const totalSize = docsToShare.reduce((acc, d) => acc + d.base64.length, 0);
-          if (totalSize > 1000000) { // ~1MB
-            setError('Errore: I file selezionati sono troppo pesanti (>1MB). Riduci la qualità o seleziona meno file.');
-            setIsProcessing(false);
-            return;
-          }
-
           setError('Destinatario connesso. Inviando documenti...');
           
           try {
-            await updateDoc(doc(db, 'stanze_condivisione', roomCode), {
-              documents: docsToShare.map(d => ({
+            const docsToShare = myArchive.filter(d => selectedDocs.has(d.id));
+            const { collection, addDoc } = await import('firebase/firestore');
+            
+            // Upload each doc to subcollection
+            for (const d of docsToShare) {
+              await addDoc(collection(db, 'stanze_condivisione', roomCode, 'documenti'), {
                 nome: d.fileName,
                 tipo: d.fileType,
                 base64: d.base64
-              })),
+              });
+            }
+
+            await updateDoc(doc(db, 'stanze_condivisione', roomCode), {
               status: 'ready'
             });
             setError('Documenti inviati con successo!');
-            unsub(); // Stop listening after success
+            unsub();
           } catch (err) {
             setError(`Errore durante l'invio: ${err}`);
           }
@@ -323,11 +322,14 @@ export default function App() {
             return;
           }
           const data = snapshot.data();
-          if (data.status === 'ready' && data.documents) {
-            setReceivedDocs(data.documents);
+          if (data.status === 'ready') {
+            const { getDocs, collection } = await import('firebase/firestore');
+            const docsSnap = await getDocs(collection(db, 'stanze_condivisione', code, 'documenti'));
+            const docsList = docsSnap.docs.map(d => d.data());
+            
+            setReceivedDocs(docsList);
             setError('File ricevuti! Clicca sulle icone per scaricarli.');
             setIsProcessing(false);
-            // We don't delete yet to allow manual clicks
           }
         });
       } else {
